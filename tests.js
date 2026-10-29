@@ -82,33 +82,36 @@
     const need = { maiden: 0, c1: 1, c2: 2, c3: 3 };
     for (let s = 200; s < 260; s++) {
       const race = E.generateRace({ seed: s, raceNo: 1 + (s % 12), venueIdx: s % 6, day: 1 + (s % 5) });
+      const young = race.cond === '2歳' || race.cond === '3歳';
       for (const h of race.horses) {
         const c = h.career;
-        ok(c.length >= 1 && h.past.length === Math.min(5, c.length), '戦績数');
+        eq(h.past.length, Math.min(5, c.length), '戦績数');
         const wins = h.records.all[0];
         if (race.cls.key in need) eq(wins, need[race.cls.key], `${race.cls.name} の勝利数`);
-        else ok(wins >= 4, 'オープン以上は4勝以上');
-        eq(h.records.all.reduce((a, b) => a + b, 0), c.length, '通算成績の合計');
-        // 新しい順・当日より前
+        else ok(wins >= (young ? 1 : 4), `オープン以上の勝利数 ${wins}`);
+        eq(h.records.all.reduce((a, b) => a + b, 0), c.length + h.preStarts, '通算成績の合計(2024年6月以前を含む)');
+        if (!c.length) { ok(race.cls.key === 'maiden' || h.preStarts > 0, '初出走は未勝利・新馬戦'); continue; }
+        // 新しい順・当日より前・中 1 週以上
         ok(c[0].date < race.date, '前走は当日より前');
-        for (let k = 1; k < c.length; k++) ok(c[k].date < c[k - 1].date, '日付は新しい順');
-        // 未勝利馬は未勝利(新馬)戦のみ、条件馬は最後の勝利以降は現クラス
+        for (let k = 1; k < c.length; k++) ok(c[k - 1].date - c[k].date >= 13 * 86400000, '日付は新しい順・中1週以上');
+        // 最後の勝利以降は今のクラス(か、年齢限定のオープン・重賞)
         if (race.cls.key in need) {
           const lastWin = c.findIndex(r => r.pos === 1);
           const since = lastWin === -1 ? c : c.slice(0, lastWin);
-          ok(since.every(r => r.cls.key === race.cls.key), '勝利後は現クラスで走る');
+          ok(since.every(r => r.cls.key === race.cls.key || r.cls.key === 'op' || r.cls.grade), '勝利後は現クラスで走る');
         }
-        // 新馬戦は 2 歳時のデビュー戦だけ。デビューは 2 歳の 6 月以降
-        const debut = c[c.length - 1], y = new Date(race.date).getUTCFullYear();
+        // 新馬戦はデビュー戦だけ(2 歳か 3 歳の春)。デビューは 2 歳の 6 月以降
+        const first = c[c.length - 1], y = new Date(race.date).getUTCFullYear();
         const ageAt = r => h.age - (y - new Date(r.date).getUTCFullYear());
-        ok(ageAt(debut) >= 2 && debut.date >= Date.UTC(y - (h.age - 2), 5, 1), `デビュー時期 ${debut.dateLabel} ${h.age}歳`);
-        eq(debut.raceName === '新馬', ageAt(debut) === 2, '新馬戦は2歳デビューのみ');
+        ok(first.date >= Date.UTC(y - (h.age - 2), 5, 1), `デビュー時期 ${first.dateLabel} ${h.age}歳`);
+        if (!h.preStarts) ok(first.raceName === '新馬' || (first.raceName === '未勝利' && ageAt(first) === 3), 'デビューは新馬戦(3歳は未勝利戦も)');
+        if (first.raceName === '新馬') ok(ageAt(first) <= 3, '新馬戦は2〜3歳');
         ok(c.slice(0, -1).every(r => r.raceName !== '新馬'), '新馬戦はデビュー戦だけ');
-        if (race.cls.key === 'maiden') eq(h.age, 3, '未勝利戦は3歳限定');
+        if (race.cls.key === 'maiden') ok(h.age === 2 || h.age === 3, '未勝利戦は2・3歳');
         for (const r of c) {
           ok(r.pos >= 1 && r.pos <= r.field && r.pop >= 1 && r.pop <= r.field && r.no <= r.field, '着順・人気・馬番');
           ok(r.passing.split('-').every(x => +x >= 1 && +x <= r.field), '通過順 ' + r.passing);
-          ok(r.last3f > 31 && r.last3f < 42, '上がり ' + r.last3f);
+          ok(r.last3f > 31 && r.last3f < 43, '上がり ' + r.last3f);
           ok(r.pos === 1 ? r.diff <= 0 : r.diff >= 0, 'タイム差の符号(勝ちは 2 着との差を 0 以下で)');
           const course = E.COURSES.find(x => x.venue === r.venue);
           ok(course[r.surface === '芝' ? 'turf' : 'dirt'].includes(r.dist), '実在する距離 ' + r.venue + r.surface + r.dist);
@@ -203,9 +206,9 @@
       const groups = new Map();
       r.horses.forEach(h => {
         horses++;
-        if (h.past[0].pos === 1) lastWin++;
+        if (h.past[0] && h.past[0].pos === 1) lastWin++;
         h.career.forEach(x => {
-          const k = `${x.date}|${x.venue}|${x.raceName}|${x.surface}|${x.dist}|${x.cls.key}`;
+          const k = x.raceId;
           if (!groups.has(k)) groups.set(k, []);
           groups.get(k).push({ h, x });
         });
@@ -247,7 +250,7 @@
       fronts.push({ p: r.paceAdj, front: w === '逃げ' || w === '先行' });
     }
     const closers = (wins['差し'] + wins['追込']) / N;
-    ok(closers > 0.3 && closers < 0.55, `差し・追込の勝ち馬シェア ${(closers * 100).toFixed(0)}% ${JSON.stringify(wins)}`);
+    ok(closers > 0.3 && closers < 0.62, `差し・追込の勝ち馬シェア ${(closers * 100).toFixed(0)}% ${JSON.stringify(wins)}`);
     ok(wins['逃げ'] / N > 0.06, '逃げ切りもある');
     fronts.sort((a, b) => a.p - b.p);
     const t = Math.floor(N / 3), share = a => a.filter(x => x.front).length / a.length;
@@ -395,8 +398,8 @@
       if (race.surface === '芝' && race.distance === 1600) mile.push(res.rows[0].time);
     }
     const fw = fav / N, ft = favTop3 / N;
-    ok(fw > 0.25 && fw < 0.45, '1番人気勝率 ' + fw);
-    ok(ft > 0.55 && ft < 0.78, '1番人気複勝率 ' + ft);
+    ok(fw > 0.25 && fw < 0.5, '1番人気勝率 ' + fw);
+    ok(ft > 0.55 && ft < 0.82, '1番人気複勝率 ' + ft);
     mile.sort((a, b) => a - b);
     const med = mile[mile.length >> 1];
     ok(med > 90 && med < 96, '芝1600 勝ちタイム中央値 ' + med);

@@ -20,12 +20,12 @@
   // meet: その日の開催(3 場 × 12R)。races[key] = { tickets, done, skipped, winnerNo, winner }
   function defaultSave() {
     return { v: 2, bankroll: START_MONEY, topups: 0, speed: 4, view: 'paper', stats: { wagered: 0, returned: 0, races: 0, hitRaces: 0 }, history: [], meet: null, sel: null,
-      sound: true, voice: true, side: true, tipsters: {} };
+      sound: true, voice: true, side: true, tipsters: {}, worldSeed: newSeed(), worldLog: [] };
   }
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(KEY));
-      if (s && s.v === 2) return { sound: true, voice: true, side: true, tipsters: {}, ...s };
+      if (s && s.v === 2) return { sound: true, voice: true, side: true, tipsters: {}, worldSeed: newSeed(), worldLog: [], ...s };
       if (s && s.v === 1) {
         // 旧形式(1 場ずつ):未精算の馬券は払い戻して引き継ぐ
         const refund = s.cur && s.cur.status !== 'done' ? s.cur.tickets.reduce((a, t) => a + t.cost, 0) : 0;
@@ -39,30 +39,52 @@
     try { localStorage.setItem(KEY, JSON.stringify(save)); } catch (e) { /* ignore */ }
   }
 
+  const newSeed = () => (Math.random() * 0xffffffff) >>> 0;
   let save = load();
   let race = null, result = null, cart = [], anim = null, showHistory = false;
   const ui = { type: 'win', method: 'normal', rows: [[]], stake: 100 };
 
-  const newSeed = () => (Math.random() * 0xffffffff) >>> 0;
   const raceLabel = r => `${r.venue} ${r.day}日目 ${r.raceNo}R`;
 
   // ---------- 開催 ----------
   const headerCache = new Map();
   let scheduleCache = null;
   // 出走馬の生成方式を変えたら上げる(同じシードでも別の馬になるため、古い開催は作り直す)
-  const MEET_GEN = 5;
+  const MEET_GEN = 6;
+  // 競走馬データベース(約 8,500 頭・過去 2 年半の全レース)。開いた時に作り、これまでの開催の結果を順に書き込む
+  let world = null;
+  function buildWorld() {
+    world = E.createWorld(save.worldSeed);
+    for (const log of save.worldLog) applyResults(log.day, log.races);
+    if (save.meet) applyResults(save.meet.day, Object.fromEntries(Object.entries(save.meet.races).filter(([, st]) => st.res).map(([k, st]) => [k, st.res])));
+    scheduleCache = null; headerCache.clear();
+  }
+  function applyResults(day, races) {
+    for (const def of E.meetCard(world, day, 0)) if (races[def.key]) E.recordRace(world, def, E.unpackRows(races[def.key]));
+  }
+  // レースが確定したらデータベースへ(以降の出馬表・馬柱に反映)
+  function finishRace(key, r, res) {
+    const rows = E.resultRows(r, res);
+    E.recordRace(world, r.def, rows);
+    rstate(key).res = E.packRows(rows);
+  }
   function newMeet(day) {
-    save.meet = { gen: MEET_GEN, day, seedBase: newSeed(), races: {} };
+    save.meet = { gen: MEET_GEN, day, races: {} };
     save.sel = null;
     headerCache.clear();
   }
+  // その日の番組:データベースの出馬表(3 場 × 12R)に発走時刻を付けたもの
   function schedule() {
-    if (!scheduleCache || scheduleCache.day !== save.meet.day) scheduleCache = E.daySchedule(save.meet.day);
+    if (!scheduleCache || scheduleCache.day !== save.meet.day) {
+      const base = E.daySchedule(save.meet.day);
+      const defs = new Map(E.meetCard(world, save.meet.day, 0).map(d => [d.key, d]));
+      scheduleCache = { ...base, races: base.races.filter(r => defs.has(r.key)).map(r => ({ ...r, def: defs.get(r.key) })) };
+    }
     return scheduleCache;
   }
   const infoOf = key => schedule().races.find(r => r.key === key);
   const rstate = key => (save.meet.races[key] ||= { tickets: [], done: false });
-  const raceOpts = info => ({ seed: E.hashStr(`${save.meet.seedBase}|${save.meet.day}|${info.key}`), raceNo: info.raceNo, venueIdx: info.venueIdx, slot: info.slot, day: save.meet.day });
+  const raceOpts = info => ({ seed: E.hashStr(`${save.worldSeed}|${save.meet.day}|${info.key}`), def: info.def, world, day: save.meet.day });
   // 番組表・自動スキップ用の軽量版(オッズなし。出走馬と結果は通常版と同じ)
   function header(info) {
     if (!headerCache.has(info.key)) headerCache.set(info.key, E.generateRace({ ...raceOpts(info), light: true }));
@@ -98,14 +120,20 @@
 
   function init() {
     if (save.meet && save.meet.gen !== MEET_GEN) {
-      // 旧方式の開催:未発走レースの馬券は払い戻して同じ日を作り直す
+      // 旧方式の開催:未発走レースの馬券は払い戻し、新しいデータベースで 1 日目から
       const refund = Object.values(save.meet.races).filter(r => !r.done).flatMap(r => r.tickets).reduce((a, t) => a + t.cost, 0);
       save.bankroll += refund;
       save.stats.wagered -= refund;
-      newMeet(save.meet.day);
+      save.worldSeed = newSeed(); save.worldLog = [];
+      save.meet = null;
     }
-    if (!save.meet) newMeet(1);
-    selectRace(save.sel && infoOf(save.sel) ? save.sel : nextKey());
+    // データベースを作る間(1 秒ほど)は案内を出す
+    $('#app').innerHTML = '<div class="loading"><div class="spinner"></div><p>競走馬データベースを作成中…<br><small>約 8,500 頭・過去 2 年半のレースを再現しています</small></p></div>';
+    setTimeout(() => {
+      if (!save.meet) newMeet(1);
+      buildWorld();
+      selectRace(save.sel && infoOf(save.sel) ? save.sel : nextKey());
+    }, 30);
   }
 
   // ---------- 投票パネルの状態 ----------
@@ -283,7 +311,7 @@
       const pr = E.placeRange(race, h.no);
       const pop = m.pop[i];
       const diff = h.bodyDiff === 0 ? '±0' : (h.bodyDiff > 0 ? '+' : '') + h.bodyDiff;
-      const last = h.past[0];
+      const last = h.past[0] || null;
       return `
         <tr class="${mine.has(h.no) ? 'mine' : ''}">
           <td>${waku(h.bracket)}</td>
@@ -297,7 +325,7 @@
           <td><span class="train t${h.trainingGrade}">${h.trainingGrade}</span></td>
           <td class="sub">${interval(h.layoff)}</td>
           <td>${rec(h.records.all)}</td>
-          <td class="lastrun">${last.venue} ${esc(last.raceName)} ${surfShort(last.surface)}${last.dist} <b>${last.pos}着</b> ${E.formatTime(last.time)}<span class="sub">(${last.pop}人)</span></td>
+          <td class="lastrun">${last ? `${last.venue} ${esc(last.raceName)} ${surfShort(last.surface)}${last.dist} <b>${last.pos}着</b> ${E.formatTime(last.time)}<span class="sub">(${last.pop}人)</span>` : '<span class="sub">初出走</span>'}</td>
           <td class="pasts">${pastHtml(h)}</td>
           <td class="odds ${pop <= 3 ? 'hot' : ''}">${odds1(m.winPay[i])}</td>
           <td class="pop">${pop}</td>
@@ -358,7 +386,7 @@
               <tr><th>同距離</th><td>${rec(r.dist)}</td><th>重不良</th><td>${rec(r.heavy)}</td></tr>
             </table>
           </td>
-          ${[0, 1, 2, 3, 4].map(k => runCell(h.past[k])).join('')}
+          ${h.past.length ? [0, 1, 2, 3, 4].map(k => runCell(h.past[k])).join('') : '<td class="run none debut" colspan="5"><b>初出走</b><span class="sub">(調教 ' + h.trainingGrade + ')</span></td>'}
         </tr>`;
     }).join('');
     return `
@@ -667,12 +695,13 @@
 
   function render() {
     const app = $('#app');
-    let main;
-    if (anim) main = skipNoteHtml() + renderRaceView();
-    else if (!race) main = renderProgram() + renderDayEnd();
-    else if (curState().done) main = renderProgram() + renderRaceInfo() + skipNoteHtml() + renderResult();
-    else main = renderProgram() + renderRaceInfo() + `<div class="layout">${renderCard()}${renderBetPanel()}</div>`;
-    app.innerHTML = renderHeader() + (anim ? renderRaceInfo() : '') + main + renderHistory();
+    // デスクトップでは画面の高さにぴったり収め、長い中身(馬柱・投票・結果)はそれぞれの枠の中でスクロールする
+    let body;
+    if (anim) body = `<div class="fill race-mode">${renderRaceInfo()}${skipNoteHtml()}${renderRaceView()}</div>`;
+    else if (!race) body = renderProgram() + `<div class="fill">${renderDayEnd()}</div>`;
+    else if (curState().done) body = renderProgram() + `<div class="fill result-mode">${renderRaceInfo()}${skipNoteHtml()}<div class="scrollpane">${renderResult()}</div></div>`;
+    else body = renderProgram() + `<div class="fill card-mode">${renderRaceInfo()}<div class="layout">${renderCard()}${renderBetPanel()}</div></div>`;
+    app.innerHTML = `<div class="shell">${renderHeader()}${body}</div>` + renderHistory();
     if (anim) setupCanvases();
   }
 
@@ -708,6 +737,7 @@
       const st = rstate(r.key);
       if (st.done) continue;
       const lr = header(r), res = E.runRace(lr);
+      finishRace(r.key, lr, res);
       Object.assign(st, { done: true, skipped: true, winnerNo: res.order[0], winner: lr.horses[res.order[0] - 1].name });
       skipped.push(`${lr.venue}${r.raceNo}R`);
     }
@@ -718,6 +748,7 @@
     const st = curState();
     st.skippedBefore = skipped;
     result = E.runRace(race);
+    finishRace(tgt, race, result);
     let back = 0, spent = 0;
     for (const t of st.tickets) {
       t.ret = E.ticketReturn(t, result.payouts).total;
@@ -783,13 +814,20 @@
       }
       case 'replay': startAnim(); break;
       case 'next': selectRace(nextKey()); break;
-      case 'nextday': newMeet(save.meet.day + 1); selectRace(nextKey()); break;
+      case 'nextday': {
+        // その日の結果を記録して翌日へ(データベースは記録済み。次の出馬表は翌日の分から作る)
+        save.worldLog.push({ day: save.meet.day, races: Object.fromEntries(Object.entries(save.meet.races).filter(([, st]) => st.res).map(([k, st]) => [k, st.res])) });
+        newMeet(save.meet.day + 1); selectRace(nextKey());
+        break;
+      }
       case 'history': showHistory = true; render(); break;
       case 'closehist': showHistory = false; render(); break;
       case 'topup': save.bankroll += START_MONEY; save.topups++; persist(); render(); break;
       case 'reset':
         if (confirm('所持金・履歴をすべてリセットしますか?')) {
-          save = defaultSave(); newMeet(1); selectRace(nextKey());
+          save = defaultSave(); newMeet(1);
+          $('#app').innerHTML = '<div class="loading"><div class="spinner"></div><p>競走馬データベースを作成中…</p></div>';
+          setTimeout(() => { buildWorld(); selectRace(nextKey()); }, 30);
         }
         break;
     }
@@ -1182,7 +1220,7 @@
   // テストからの操作用
   window.__keiba = {
     get race() { return race; }, get result() { return result; }, get save() { return save; }, get anim() { return anim; }, get tv() { return tv; }, ui,
-    get cur() { return curState(); }, schedule, nextKey, targetKey, rstate, header,
+    get cur() { return curState(); }, get world() { return world; }, schedule, nextKey, targetKey, rstate, header,
   };
 
   init();

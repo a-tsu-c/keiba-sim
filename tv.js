@@ -299,7 +299,7 @@
         // スタンド屋上(高さ 24m)から真横に見下ろす。先頭集団の前後・内外が収まるようズーム
         const top = order.slice(0, Math.min(n, 6));
         const leadC = Math.min(lead, D + 30);
-        const spread = clamp(leadC - pos[top[top.length - 1]], 6, 32);
+        const spread = clamp(leadC - pos[top[top.length - 1]], 6, 70);
         const ls = top.map(j => lane[j]);
         const lMin = clamp(Math.min(...ls) - 1.5, 0, TRACK_W), lMax = clamp(Math.max(...ls) + 1.5, lMin + 6, TRACK_W);
         const ts = leadC - spread / 2 + 2;

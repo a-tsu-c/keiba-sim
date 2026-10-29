@@ -22,7 +22,9 @@
         w.addEventListener('error', e => errors.push(e.message));
         w.alert = m => { w.__alerts = (w.__alerts || []).concat(m); };
         w.confirm = () => true;
-        res(w);
+        // データベースの作成(1 秒ほど)を待つ
+        const wait = () => (w.__keiba && w.__keiba.race ? res(w) : setTimeout(wait, 50));
+        wait();
       };
       f.src = 'index.html?' + Math.random();
     });
@@ -241,6 +243,8 @@
 
     // リセット
     click(w, '[data-act="reset"]');
+    await sleep(100);
+    for (let k = 0; k < 100 && !w.document.getElementById('bankroll'); k++) await sleep(50);
     log(text(w, '#bankroll') === '¥100,000', 'リセットで初期化');
 
     log(errors.length === 0, 'JS エラーなし ' + errors.join(' | '));
