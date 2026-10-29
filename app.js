@@ -8,7 +8,14 @@
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const odds1 = pay => (pay / 100).toFixed(1);
 
-  const KEY = 'keiba-sim-v1';
+  // 保存はモードごと(12R・重賞のみ)。マルチプレイはルームの間だけ。総成績はこのブラウザの全モード通算
+  const SLOT_KEY = { normal: 'keiba-sim-v1', graded: 'keiba-sim-graded-v1' };
+  const MODE_KEY = 'keiba-sim-mode';
+  const PROFILE_KEY = 'keiba-sim-profile';
+  const MODE_LABEL = { normal: '12R(3場)', graded: '重賞のみ', multi: 'マルチ' };
+  const PREF_FIELDS = ['speed', 'view', 'sound', 'voice', 'side', 'voiceName'];
+  const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } };
   const START_MONEY = 100000;
   const BRACKET_COLORS = {
     1: ['#ffffff', '#111'], 2: ['#222222', '#fff'], 3: ['#e53935', '#fff'], 4: ['#1e6fd9', '#fff'],
@@ -22,9 +29,9 @@
     return { v: 2, bankroll: START_MONEY, topups: 0, speed: 4, view: 'paper', stats: { wagered: 0, returned: 0, races: 0, hitRaces: 0 }, history: [], meet: null, sel: null,
       sound: true, voice: true, side: true, tipsters: {}, worldSeed: newSeed(), worldLog: [] };
   }
-  function load() {
+  function load(key) {
     try {
-      const s = JSON.parse(localStorage.getItem(KEY));
+      const s = JSON.parse(lsGet(key));
       if (s && s.v === 2) return { sound: true, voice: true, side: true, tipsters: {}, worldSeed: newSeed(), worldLog: [], ...s };
       if (s && s.v === 1) {
         // 旧形式(1 場ずつ):未精算の馬券は払い戻して引き継ぐ
@@ -36,13 +43,61 @@
     return defaultSave();
   }
   function persist() {
-    try { localStorage.setItem(KEY, JSON.stringify(save)); } catch (e) { /* ignore */ }
+    if (save && SLOT_KEY[mode]) lsSet(SLOT_KEY[mode], JSON.stringify(save));
   }
 
   const newSeed = () => (Math.random() * 0xffffffff) >>> 0;
-  let save = load();
-  let race = null, result = null, cart = [], anim = null, showHistory = false;
-  const ui = { type: 'win', method: 'normal', rows: [[]], stake: 100 };
+  let mode = lsGet(MODE_KEY) === 'graded' ? 'graded' : 'normal';
+  let save = load(SLOT_KEY[mode]);
+  let race = null, result = null, cart = [], anim = null, showHistory = false, showStats = false;
+  const ui = { type: 'win', method: 'normal', rows: [[]], stake: 100, mpStyle: 'normal', lobbyError: '', busy: '' };
+  // 遊び方:12R(3 場 36 レース)か重賞のみか。マルチはルームを作った人が決める
+  const style = () => (mode === 'multi' ? (room ? room.style : ui.mpStyle) : mode);
+  const graded = () => style() === 'graded';
+  let room = null; // マルチプレイのルーム(下の「マルチプレイ」)
+
+  // ---------- 総成績(このブラウザの全モード通算。モードのリセットでは消えない) ----------
+  const blankRec = () => ({ w: 0, r: 0, n: 0, hit: 0 });
+  function loadProfile() {
+    try { const p = JSON.parse(lsGet(PROFILE_KEY)); if (p && p.v === 1) return p; } catch (e) { /* 新規 */ }
+    const p = { v: 1, name: '', since: Date.now(), total: blankRec(), byMode: {}, byType: {}, best: null, bestOdds: null, topups: 0, resets: 0, curve: [] };
+    // 総成績を始める前の 12R モードの成績を引き継ぐ
+    try {
+      const s = JSON.parse(lsGet(SLOT_KEY.normal));
+      if (s && s.stats && s.stats.wagered > 0) {
+        const bet = (s.history || []).filter(h => h.wagered > 0);
+        const rec = { w: s.stats.wagered, r: s.stats.returned, n: Math.max(bet.length, s.stats.hitRaces), hit: s.stats.hitRaces };
+        p.total = { ...rec }; p.byMode.normal = { ...rec }; p.topups = s.topups || 0;
+        let pl = (s.stats.returned - s.stats.wagered) - bet.reduce((a, h) => a + h.returned - h.wagered, 0);
+        p.curve = bet.slice().reverse().map(h => (pl += h.returned - h.wagered));
+        const top = bet.reduce((a, h) => (!a || h.returned > a.returned ? h : a), null);
+        if (top && top.returned > 0) p.best = { ret: top.returned, spent: top.wagered, label: `${MODE_LABEL.normal} ${top.label}`, name: top.name, at: Date.now() };
+      }
+    } catch (e) { /* 引き継ぎなし */ }
+    return p;
+  }
+  let profile = loadProfile();
+  const saveProfile = () => lsSet(PROFILE_KEY, JSON.stringify(profile));
+  // 馬券を買ったレースが確定したら総成績へ
+  function addLifetime(tickets, label, name) {
+    const spent = tickets.reduce((a, t) => a + t.cost, 0), back = tickets.reduce((a, t) => a + (t.ret || 0), 0);
+    if (!spent) return;
+    const P = profile, full = `${MODE_LABEL[mode]}${mode === 'multi' ? `(${MODE_LABEL[style()]})` : ''} ${label}`;
+    for (const rec of [P.total, P.byMode[mode] ||= blankRec()]) { rec.w += spent; rec.r += back; rec.n++; if (back) rec.hit++; }
+    for (const t of tickets) {
+      const b = P.byType[t.type] ||= blankRec();
+      b.w += t.cost; b.r += t.ret || 0; b.n++;
+      if (t.ret) {
+        b.hit++;
+        const x = t.ret / t.cost;
+        if (!P.bestOdds || x > P.bestOdds.x) P.bestOdds = { x, type: t.type, sel: `${METHOD_LABEL[t.method]} ${selText(t.type, t.method, t.sel)}`, cost: t.cost, ret: t.ret, label: full, name, at: Date.now() };
+      }
+    }
+    if (back && (!P.best || back > P.best.ret)) P.best = { ret: back, spent, label: full, name, at: Date.now() };
+    P.curve.push(Math.round(P.total.r - P.total.w));
+    if (P.curve.length > 500) P.curve.shift();
+    saveProfile();
+  }
 
   const raceLabel = r => `${r.venue} ${r.day}日目 ${r.raceNo}R`;
 
@@ -55,12 +110,34 @@
   let world = null;
   function buildWorld() {
     world = E.createWorld(save.worldSeed);
-    for (const log of save.worldLog) applyResults(log.day, log.races);
-    if (save.meet) applyResults(save.meet.day, Object.fromEntries(Object.entries(save.meet.races).filter(([, st]) => st.res).map(([k, st]) => [k, st.res])));
+    for (const log of save.worldLog) {
+      applyResults(log.day, log.races);
+      if (log.q) quickRest(log.day, log.races);
+    }
+    if (save.meet) applyResults(save.meet.day, meetResults());
     scheduleCache = null; headerCache.clear();
   }
   function applyResults(day, races) {
     for (const def of E.meetCard(world, day, 0)) if (races[def.key]) E.recordRace(world, def, E.unpackRows(races[def.key]));
+  }
+  const meetResults = () => Object.fromEntries(Object.entries(save.meet.races).filter(([, st]) => st.res).map(([k, st]) => [k, st.res]));
+  // 重賞のみ:遊ばなかった平場は速い計算で確定(シードで決まるので保存しない。作り直しても同じ結果)
+  function quickRest(day, races) {
+    for (const def of E.meetCard(world, day, 0)) if (!races[def.key]) E.quickResolve(world, def, `${save.worldSeed}|q|${day}|${def.key}`);
+  }
+  // その日を締めて記録し、翌開催日へ。重賞のみでは重賞のない日を飛ばす
+  function closeDay() {
+    const day = save.meet.day, races = meetResults();
+    if (graded()) { quickRest(day, races); save.worldLog.push({ day, races, q: 1 }); }
+    else save.worldLog.push({ day, races });
+  }
+  function advanceDay() {
+    closeDay();
+    newMeet(save.meet.day + 1);
+    skipEmptyDays();
+  }
+  function skipEmptyDays() {
+    while (graded() && !schedule().races.length) { closeDay(); newMeet(save.meet.day + 1); }
   }
   // レースが確定したらデータベースへ(以降の出馬表・馬柱に反映)
   function finishRace(key, r, res) {
@@ -78,7 +155,8 @@
     if (!scheduleCache || scheduleCache.day !== save.meet.day) {
       const base = E.daySchedule(save.meet.day);
       const defs = new Map(E.meetCard(world, save.meet.day, 0).map(d => [d.key, d]));
-      scheduleCache = { ...base, races: base.races.filter(r => defs.has(r.key)).map(r => ({ ...r, def: defs.get(r.key) })) };
+      const g = graded();
+      scheduleCache = { ...base, races: base.races.filter(r => defs.has(r.key) && (!g || defs.get(r.key).cls.grade)).map(r => ({ ...r, def: defs.get(r.key) })) };
     }
     return scheduleCache;
   }
@@ -127,14 +205,38 @@
       save.worldSeed = newSeed(); save.worldLog = [];
       save.meet = null;
     }
-    // データベースを作る間(1 秒ほど)は案内を出す
-    $('#app').innerHTML = '<div class="loading"><div class="spinner"></div><p>競走馬データベースを作成中…<br><small>約 8,500 頭・過去 2 年半のレースを再現しています</small></p></div>';
+    startWorld(() => selectRace(save.sel && infoOf(save.sel) ? save.sel : nextKey()));
+  }
+  // データベースを作る間(1 秒ほど)は案内を出す
+  function showLoading(msg = '競走馬データベースを作成中…', sub = '約 8,500 頭・過去 2 年半のレースを再現しています') {
+    $('#app').innerHTML = `<div class="loading"><div class="spinner"></div><p>${msg}${sub ? `<br><small>${sub}</small>` : ''}</p></div>`;
+  }
+  function startWorld(after) {
+    showLoading();
+    race = null; result = null; cart = [];
     setTimeout(() => {
       if (!save.meet) newMeet(1);
       buildWorld();
-      selectRace(save.sel && infoOf(save.sel) ? save.sel : nextKey());
+      skipEmptyDays();
+      persist();
+      after();
     }, 30);
   }
+  // モードの切り替え(12R・重賞のみ・マルチ)。それぞれ別の所持金・開催・データベース
+  function switchMode(m) {
+    if (anim || m === mode || !MODE_LABEL[m]) return;
+    const prefs = save ? Object.fromEntries(PREF_FIELDS.filter(k => save[k] !== undefined).map(k => [k, save[k]])) : lastPrefs;
+    if (room && !leaveRoom(true)) return;
+    persist();
+    lastPrefs = prefs;
+    mode = m;
+    showHistory = false;
+    if (m === 'multi') { save = null; world = null; race = null; result = null; cart = []; render(); return; }
+    lsSet(MODE_KEY, m);
+    save = { ...load(SLOT_KEY[m]), ...prefs };
+    init();
+  }
+  let lastPrefs = {};
 
   // ---------- 投票パネルの状態 ----------
   function methodsFor(type) { return E.BET[type].k === 1 ? ['normal', 'box'] : ['normal', 'box', 'nagashi', 'formation']; }
@@ -194,6 +296,12 @@
   }
 
   function renderHeader() {
+    const modes = `<nav class="modes" aria-label="モード">${Object.keys(MODE_LABEL).map(m =>
+      `<button class="chip small ${mode === m ? 'on' : ''}" data-mode="${m}" ${anim ? 'disabled' : ''}>${MODE_LABEL[m]}</button>`).join('')}</nav>`;
+    if (!save) {
+      return `<header class="top"><div class="brand">🏇 <b>KEIBA SIM</b><span class="sub">競馬シミュレーター</span></div>${modes}
+        <div class="money"><div class="btns"><button class="ghost" data-act="stats">総成績</button></div></div></header>`;
+    }
     const st = save.stats;
     // 再生中はゴールまで払戻を伏せる
     const hidden = anim ? anim.hiddenReturn : 0;
@@ -203,13 +311,15 @@
     return `
       <header class="top">
         <div class="brand">🏇 <b>KEIBA SIM</b><span class="sub">競馬シミュレーター</span></div>
+        ${modes}
         <div class="money">
           <div><span class="lbl">所持金</span><b id="bankroll">${yen(save.bankroll - hidden)}</b></div>
-          <div><span class="lbl">通算収支</span><b class="${pl >= 0 ? 'plus' : 'minus'}">${signedYen(pl)}</b></div>
+          <div><span class="lbl">${mode === 'multi' ? 'ルーム収支' : 'このモードの収支'}</span><b class="${pl >= 0 ? 'plus' : 'minus'}">${signedYen(pl)}</b></div>
           <div><span class="lbl">回収率</span><b>${roi}</b></div>
           <div class="btns">
+            <button class="ghost" data-act="stats">総成績</button>
             <button class="ghost" data-act="history">履歴</button>
-            <button class="ghost" data-act="reset">リセット</button>
+            ${mode === 'multi' ? '' : '<button class="ghost" data-act="reset">リセット</button>'}
           </div>
         </div>
       </header>`;
@@ -404,6 +514,18 @@
   }
 
   function renderBetPanel() {
+    // マルチ:馬券を買えるのは発走対象のレースだけ
+    if (room && save.sel !== room.target) {
+      const t = targetOpen() && infoOf(room.target);
+      return `
+        <section class="card bet">
+          <h2>投票</h2>
+          <p class="hint">マルチプレイでは、ホストが選んだ「発走対象」のレースだけ馬券を買えます。</p>
+          ${t ? `<button class="primary" data-race="${room.target}">発走対象 ${E.COURSES[t.venueIdx].venue}${t.raceNo}R へ</button>` : '<p class="hint">ホストが次の発走対象を選ぶのを待っています…</p>'}
+          ${room.host && !rstate(save.sel).done ? '<button class="ghost settarget" data-act="mptarget">このレースを次の発走対象にする</button><p class="note">全員の「賭け終えた」が取り消されます</p>' : ''}
+        </section>`;
+    }
+    const locked = room && myPlayer() && myPlayer().ready;
     const bt = E.BET[ui.type];
     const isBracket = bt.unit === 'bracket';
     const units = isBracket ? [...new Set(race.horses.map(h => h.bracket))] : race.horses.map(h => h.no);
@@ -462,17 +584,17 @@
           <button class="chip small" data-stake="0">100円に戻す</button>
         </div>
         <div class="preview">${pvHtml}</div>
-        <button class="primary" data-act="add" ${pv.ok ? '' : 'disabled'}>カートに追加</button>
+        <button class="primary" data-act="add" ${pv.ok && !locked ? '' : 'disabled'}>カートに追加</button>
         <div class="cart">
           <h3>カート <small>合計 ${yen(cartTotal)}</small></h3>
           <ul>${cartHtml}</ul>
-          <button class="primary buy" data-act="buy" ${cart.length ? '' : 'disabled'}>購入する(${yen(cartTotal)})</button>
+          <button class="primary buy" data-act="buy" ${cart.length && !locked ? '' : 'disabled'}>購入する(${yen(cartTotal)})</button>
           <p class="note">※ 購入後の取消はできません(実際の馬券と同じ)</p>
         </div>
         ${boughtHtml}
         ${broke ? `<div class="broke">所持金が尽きました。<button class="primary" data-act="topup">追加入金 ${yen(START_MONEY)}</button></div>` : ''}
-        ${otherBoughtHtml()}
-        ${postButtonHtml()}
+        ${room ? '' : otherBoughtHtml()}
+        ${room ? `<div id="mpready">${mpReadyInner()}</div>` : postButtonHtml()}
       </section>`;
   }
 
@@ -501,9 +623,10 @@
     const sch = schedule(), next = nextKey();
     const rows = sch.venues.map(v => {
       const list = sch.races.filter(r => r.venueIdx === v).sort((a, b) => a.raceNo - b.raceNo);
+      if (!list.length) return '';
       return `<div class="prow"><span class="pvn">${E.COURSES[v].venue}</span><div class="pchips">${list.map(r => {
         const st = rstate(r.key), hd = header(r);
-        const cls = [st.done ? 'done' : '', st.tickets.length ? 'bought' : '', r.key === save.sel ? 'sel' : '', r.key === next ? 'next' : ''].join(' ');
+        const cls = [st.done ? 'done' : '', st.tickets.length ? 'bought' : '', r.key === save.sel ? 'sel' : '', r.key === next ? 'next' : '', room && r.key === room.target ? 'target' : ''].join(' ');
         const title = `${E.fmtClock(r.minutes)} ${hd.name}(${hd.cls.name}) ${hd.surface}${hd.distance}m ${hd.n}頭` + (st.done ? ` / 1着 ${st.winnerNo}番 ${st.winner}${st.skipped ? '(自動スキップ)' : ''}` : '');
         const mark = hd.cls.grade ? `<i class="g g${hd.cls.key.slice(1)}">${hd.cls.name}</i>` : '';
         return `<button class="pc ${cls}" data-race="${r.key}" title="${esc(title)}"><b>${r.raceNo}R</b>${mark}<small>${st.done ? `1着 ${st.winnerNo}` : E.fmtClock(r.minutes)}</small></button>`;
@@ -512,8 +635,8 @@
     const done = sch.races.filter(r => rstate(r.key).done).length;
     return `
       <section class="card program">
-        <div class="ph"><h2>${header(sch.races[0]).dateLabel} <small>${sch.venues.map(v => E.COURSES[v].venue).join('・')} 3場開催 / ${done}/${sch.races.length} レース確定</small></h2>
-          <div class="legend"><span class="pc next">次</span><span class="pc bought">購入済</span><span class="pc done">確定</span><span class="pc sel">表示中</span></div></div>
+        <div class="ph"><h2>${header(sch.races[0]).dateLabel} <small>${graded() ? `重賞のみ(${sch.venues.map(v => E.COURSES[v].venue).join('・')}開催の重賞)` : `${sch.venues.map(v => E.COURSES[v].venue).join('・')} 3場開催`} / ${done}/${sch.races.length} レース確定</small></h2>
+          <div class="legend">${room ? '<span class="pc target">発走対象</span>' : '<span class="pc next">次</span>'}<span class="pc bought">購入済</span><span class="pc done">確定</span><span class="pc sel">表示中</span></div></div>
         ${rows}
       </section>`;
   }
@@ -524,9 +647,10 @@
     const spent = played.reduce((a, h) => a + h.wagered, 0), back = played.reduce((a, h) => a + h.returned, 0);
     return `
       <section class="card dayend">
-        <h2>本日の全 ${sch.races.length} レースが終了しました</h2>
+        <h2>本日の${graded() ? '重賞' : ''}全 ${sch.races.length} レースが終了しました</h2>
         <p>購入したレース ${played.filter(h => h.wagered > 0).length} / 購入 ${yen(spent)} / 払戻 ${yen(back)} / 収支 <b class="${back - spent >= 0 ? 'plus' : 'minus'}">${signedYen(back - spent)}</b></p>
-        <button class="primary" data-act="nextday">翌開催日へ ▶</button>
+        ${!room || room.host || room.pendingDay > save.meet.day ? '<button class="primary" data-act="nextday">翌開催日へ ▶</button>'
+          : '<p class="hint">ホストが翌開催日へ進めるのを待っています…</p>'}
       </section>`;
   }
 
@@ -589,7 +713,8 @@
             <button class="primary" data-act="next">次のレースへ ▶</button>
           </div>
         </section>
-      </div>`;
+      </div>
+      ${room ? `<section class="card mpresult"><h2>プレイヤーの成績</h2><div id="mpresult">${mpResultInner()}</div></section>` : ''}`;
   }
 
   function renderHistory() {
@@ -695,13 +820,19 @@
 
   function render() {
     const app = $('#app');
+    if (mode === 'multi' && !room) {
+      app.innerHTML = `<div class="shell">${renderHeader()}<div class="fill"><div class="scrollpane">${renderLobby()}</div></div></div>` + renderStats();
+      return;
+    }
+    if (!save || !save.meet || !world) return;
     // デスクトップでは画面の高さにぴったり収め、長い中身(馬柱・投票・結果)はそれぞれの枠の中でスクロールする
     let body;
     if (anim) body = `<div class="fill race-mode">${renderRaceInfo()}${skipNoteHtml()}${renderRaceView()}</div>`;
     else if (!race) body = renderProgram() + `<div class="fill">${renderDayEnd()}</div>`;
     else if (curState().done) body = renderProgram() + `<div class="fill result-mode">${renderRaceInfo()}${skipNoteHtml()}<div class="scrollpane">${renderResult()}</div></div>`;
     else body = renderProgram() + `<div class="fill card-mode">${renderRaceInfo()}<div class="layout">${renderCard()}${renderBetPanel()}</div></div>`;
-    app.innerHTML = `<div class="shell">${renderHeader()}${body}</div>` + renderHistory();
+    const bar = room && !anim ? `<div class="mpbar" id="mpbar">${mpBarInner()}</div>` : '';
+    app.innerHTML = `<div class="shell">${renderHeader()}${bar}${body}</div>` + renderHistory() + renderStats();
     if (anim) setupCanvases();
   }
 
@@ -724,24 +855,43 @@
     persist();
     render();
   }
-  function post() {
-    if (cart.length && !confirm('カートに未購入の馬券があります。破棄して発走しますか?')) return;
+  // 馬券の精算(所持金・このモードの成績・履歴・総成績)
+  function settle(st, r, res) {
+    let back = 0, spent = 0;
+    for (const t of st.tickets) {
+      t.ret = E.ticketReturn(t, res.payouts).total;
+      back += t.ret; spent += t.cost;
+    }
+    const winner = r.horses[res.order[0] - 1].name;
+    save.bankroll += back;
+    save.stats.returned += back;
+    save.stats.races++;
+    if (back > 0) save.stats.hitRaces++;
+    save.history.unshift({ day: r.day, label: raceLabel(r), name: r.name, winner, wagered: spent, returned: back });
+    save.history = save.history.slice(0, 200);
+    addLifetime(st.tickets, `${r.dateLabel} ${raceLabel(r)}`, r.name);
+    return { spent, back, winner };
+  }
+  // 発走。forceKey はマルチで全員そろった時に走らせるレース(それ以外は馬券を買った最も早いレース)
+  function post(forceKey) {
+    if (!forceKey && cart.length && !confirm('カートに未購入の馬券があります。破棄して発走しますか?')) return;
     cart = [];
-    const tgt = targetKey();
-    if (!tgt) return;
+    const tgt = forceKey || targetKey();
+    if (!tgt || !infoOf(tgt) || rstate(tgt).done) return;
     const tinfo = infoOf(tgt);
-    // 時刻順でそれより前の未購入レースは結果だけ確定させて飛ばす
+    // 時刻順でそれより前の未発走レースは結果だけ確定させて飛ばす(馬券があれば精算する)
     const skipped = [];
     for (const r of schedule().races) {
       if (r.minutes >= tinfo.minutes) break;
       const st = rstate(r.key);
       if (st.done) continue;
-      const lr = header(r), res = E.runRace(lr);
+      const lr = st.tickets.length ? E.generateRace(raceOpts(r)) : header(r), res = E.runRace(lr);
       finishRace(r.key, lr, res);
+      if (st.tickets.length) settle(st, lr, res);
       Object.assign(st, { done: true, skipped: true, winnerNo: res.order[0], winner: lr.horses[res.order[0] - 1].name });
       skipped.push(`${lr.venue}${r.raceNo}R`);
     }
-    if (tgt !== save.sel) {
+    if (tgt !== save.sel || !race) {
       save.sel = tgt;
       race = E.generateRace(raceOpts(tinfo));
     }
@@ -749,22 +899,11 @@
     st.skippedBefore = skipped;
     result = E.runRace(race);
     finishRace(tgt, race, result);
-    let back = 0, spent = 0;
-    for (const t of st.tickets) {
-      t.ret = E.ticketReturn(t, result.payouts).total;
-      back += t.ret; spent += t.cost;
-    }
-    save.bankroll += back;
-    save.stats.returned += back;
-    save.stats.races++;
-    if (back > 0) save.stats.hitRaces++;
-    save.history.unshift({
-      day: race.day, label: raceLabel(race), name: race.name, winner: race.horses[result.order[0] - 1].name, wagered: spent, returned: back,
-    });
-    save.history = save.history.slice(0, 200);
-    Object.assign(st, { done: true, winnerNo: result.order[0], winner: race.horses[result.order[0] - 1].name });
+    const { spent, back, winner } = settle(st, race, result);
+    Object.assign(st, { done: true, winnerNo: result.order[0], winner });
     recordTipsters();
     persist();
+    if (room) reportScore(tgt, spent, back);
     startAnim(back);
   }
 
@@ -773,6 +912,8 @@
     if (!el || el.disabled) return;
     if (el.classList.contains('modal') && e.target !== el) return;
     const d = el.dataset;
+    if (d.mode) { switchMode(d.mode); return; }
+    if (d.mpstyle) { ui.mpStyle = d.mpstyle; render(); return; }
     if (d.race) { if (!anim) selectRace(d.race); return; }
     if (d.view) { save.view = d.view; persist(); render(); return; }
     if (d.type) { setType(d.type); render(); return; }
@@ -813,26 +954,57 @@
         break;
       }
       case 'replay': startAnim(); break;
-      case 'next': selectRace(nextKey()); break;
-      case 'nextday': {
-        // その日の結果を記録して翌日へ(データベースは記録済み。次の出馬表は翌日の分から作る)
-        save.worldLog.push({ day: save.meet.day, races: Object.fromEntries(Object.entries(save.meet.races).filter(([, st]) => st.res).map(([k, st]) => [k, st.res])) });
-        newMeet(save.meet.day + 1); selectRace(nextKey());
+      case 'next':
+        if (room) nextInRoom();
+        else selectRace(nextKey());
         break;
-      }
+      case 'nextday':
+        // その日の結果を記録して翌日へ(データベースは記録済み。次の出馬表は翌日の分から作る)
+        if (room) nextDayInRoom();
+        else { advanceDay(); persist(); selectRace(nextKey()); }
+        break;
       case 'history': showHistory = true; render(); break;
       case 'closehist': showHistory = false; render(); break;
-      case 'topup': save.bankroll += START_MONEY; save.topups++; persist(); render(); break;
-      case 'reset':
-        if (confirm('所持金・履歴をすべてリセットしますか?')) {
-          save = defaultSave(); newMeet(1);
-          $('#app').innerHTML = '<div class="loading"><div class="spinner"></div><p>競走馬データベースを作成中…</p></div>';
-          setTimeout(() => { buildWorld(); selectRace(nextKey()); }, 30);
+      case 'stats': showStats = true; render(); break;
+      case 'closestats': showStats = false; render(); break;
+      case 'export': exportData(); break;
+      case 'import': $('#importFile').click(); break;
+      case 'resetstats':
+        if (confirm('総成績(全モード通算)をリセットしますか?各モードの所持金・開催はそのままです。')) {
+          const name = profile.name;
+          lsSet(PROFILE_KEY, JSON.stringify({ v: 1, name, since: Date.now(), total: blankRec(), byMode: {}, byType: {}, best: null, bestOdds: null, topups: 0, resets: 0, curve: [] }));
+          profile = loadProfile(); render();
         }
+        break;
+      case 'topup': save.bankroll += START_MONEY; save.topups++; profile.topups++; saveProfile(); persist(); if (room) reportScore(); render(); break;
+      case 'reset':
+        if (confirm(`${MODE_LABEL[mode]}モードの所持金・履歴・開催をリセットしますか?(総成績は残ります)`)) {
+          const prefs = Object.fromEntries(PREF_FIELDS.filter(k => save[k] !== undefined).map(k => [k, save[k]]));
+          save = { ...defaultSave(), ...prefs };
+          profile.resets++; saveProfile();
+          startWorld(() => selectRace(nextKey()));
+        }
+        break;
+      case 'mpcreate': createRoom(); break;
+      case 'mpjoin': joinRoom(($('#mpCode') || {}).value); break;
+      case 'mpleave': if (leaveRoom(true)) render(); break;
+      case 'mpready': setReady(true); break;
+      case 'mpunready': setReady(false); break;
+      case 'mpforce': if (room && room.host && confirm('準備ができていないプレイヤーを待たずに発走しますか?')) startRoomRace(); break;
+      case 'mptarget': if (room && room.host) setTarget(save.sel); break;
+      case 'copycode':
+        try { navigator.clipboard.writeText(room.code); el.textContent = 'コピーしました'; } catch (err) { /* 表示だけ */ }
         break;
     }
   });
   document.addEventListener('change', e => {
+    if (e.target.id === 'importFile') { importData(e.target.files[0]); e.target.value = ''; return; }
+    if (e.target.classList.contains('pname')) {
+      profile.name = cleanName(e.target.value); saveProfile();
+      const p = myPlayer();
+      if (p && room.host && profile.name) { p.name = profile.name; syncPlayers(); }
+      return;
+    }
     if (e.target.id === 'voiceSel') {
       save.voiceName = e.target.value; persist(); KeibaSound.setVoiceName(save.voiceName);
       KeibaSound.speak('この声で実況します。');
@@ -844,6 +1016,422 @@
       render();
     }
   });
+
+  // ---------- 総成績(このブラウザの全モード通算) ----------
+  const pct = (a, b, d = 0) => (b ? (a / b * 100).toFixed(d) + '%' : '—');
+  const man = v => (Math.abs(v) >= 10000 ? (v > 0 ? '+' : v < 0 ? '-' : '') + (Math.abs(v) / 10000).toFixed(Math.abs(v) >= 1e6 ? 0 : 1) + '万' : signedYen(v));
+  function recRow(label, x) {
+    x = x || blankRec();
+    const pl = x.r - x.w;
+    return `<tr><th>${label}</th><td>${x.n.toLocaleString()}</td><td>${pct(x.hit, x.n)}</td><td>${yen(x.w)}</td><td>${yen(x.r)}</td>
+      <td class="${!x.n ? '' : pl >= 0 ? 'plus' : 'minus'}">${signedYen(pl)}</td><td>${pct(x.r, x.w, 1)}</td></tr>`;
+  }
+  // 通算収支の推移(馬券を買ったレースごと。ホバーで値)
+  let curveState = null;
+  function curveSvg(c) {
+    if (c.length < 2) { curveState = null; return '<p class="hint">馬券を買ったレースが 2 つ以上になると、通算収支の推移を表示します。</p>'; }
+    const W = 900, H = 170, pad = { l: 58, r: 12, t: 12, b: 12 };
+    const lo = Math.min(0, ...c), hi = Math.max(0, ...c), span = hi - lo || 1;
+    const x = i => pad.l + i / (c.length - 1) * (W - pad.l - pad.r);
+    const y = v => pad.t + (hi - v) / span * (H - pad.t - pad.b);
+    const n0 = profile.total.n - c.length;
+    curveState = { c, x, y, n0, W, pad };
+    const last = c[c.length - 1];
+    return `
+      <div class="curve" id="curve">
+        <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="通算収支の推移(直近 ${c.length} レース、最新 ${signedYen(last)})">
+          <line class="zero" x1="${pad.l}" x2="${W - pad.r}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>
+          <text class="ax" x="${pad.l - 6}" y="${(y(hi) + 4).toFixed(1)}" text-anchor="end">${man(hi)}</text>
+          ${lo < 0 && hi > 0 ? `<text class="ax" x="${pad.l - 6}" y="${(y(0) + 4).toFixed(1)}" text-anchor="end">0</text>` : ''}
+          <text class="ax" x="${pad.l - 6}" y="${(y(lo) + 4).toFixed(1)}" text-anchor="end">${man(lo)}</text>
+          <polyline class="ln" points="${c.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>
+          <line class="cross" x1="0" x2="0" y1="${pad.t}" y2="${H - pad.b}" visibility="hidden"/>
+          <circle class="dot" r="4" cx="${x(c.length - 1).toFixed(1)}" cy="${y(last).toFixed(1)}"/>
+        </svg>
+        <div class="ctip" hidden></div>
+      </div>
+      <p class="note">直近 ${c.length} レース(馬券を買ったレース)の通算収支。最新 <b class="${last >= 0 ? 'plus' : 'minus'}">${signedYen(last)}</b></p>`;
+  }
+  function curveHover(e) {
+    const box = e.target.closest && e.target.closest('#curve');
+    if (!curveState) return;
+    const all = document.getElementById('curve');
+    if (!all) return;
+    const cross = all.querySelector('.cross'), dot = all.querySelector('.dot'), tip = all.querySelector('.ctip');
+    const { c, x, y, n0, W, pad } = curveState;
+    if (!box) { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; dot.setAttribute('cx', x(c.length - 1)); dot.setAttribute('cy', y(c[c.length - 1])); return; }
+    const r = all.querySelector('svg').getBoundingClientRect();
+    const vx = (e.clientX - r.left) / r.width * W;
+    const i = Math.max(0, Math.min(c.length - 1, Math.round((vx - pad.l) / (W - pad.l - pad.r) * (c.length - 1))));
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(c[i]));
+    tip.hidden = false;
+    tip.innerHTML = `${(n0 + i + 1).toLocaleString()}レース目<br><b class="${c[i] >= 0 ? 'plus' : 'minus'}">${signedYen(c[i])}</b>`;
+    const px = x(i) / W * r.width;
+    tip.style.left = Math.min(r.width - 120, Math.max(0, px + 10)) + 'px';
+  }
+  document.addEventListener('mousemove', curveHover);
+
+  function renderStats() {
+    if (!showStats) return '';
+    const P = profile, t = P.total, pl = t.r - t.w;
+    const tile = (lbl, val, cls = '') => `<div class="tile"><span class="lbl">${lbl}</span><b class="${cls}">${val}</b></div>`;
+    const best = P.best ? `<b>${yen(P.best.ret)}</b> <span class="sub">${esc(P.best.label)} ${esc(P.best.name)}(購入 ${yen(P.best.spent)})</span>` : '<span class="sub">まだありません</span>';
+    const bo = P.bestOdds ? `<b>${P.bestOdds.x.toFixed(1)}倍</b> <span class="sub">${E.BET[P.bestOdds.type].label} ${esc(P.bestOdds.sel)} ${yen(P.bestOdds.cost)} → ${yen(P.bestOdds.ret)} / ${esc(P.bestOdds.label)}</span>` : '<span class="sub">まだありません</span>';
+    const head = k => `<thead><tr><th></th><th>${k}</th><th>的中率</th><th>購入</th><th>払戻</th><th>収支</th><th>回収率</th></tr></thead>`;
+    return `
+      <div class="modal" data-act="closestats">
+        <div class="modalbox stats" role="dialog" aria-label="総成績">
+          <h2>総成績 <small>このブラウザでの全モード通算(${new Date(P.since).toLocaleDateString('ja-JP')} から)。モードのリセットでは消えません</small></h2>
+          <label class="pname-l">プレイヤー名 <input class="pname" id="pName" maxlength="12" value="${esc(P.name)}" placeholder="マルチプレイで表示する名前"></label>
+          <div class="tiles">
+            ${tile('収支', signedYen(pl), pl >= 0 ? 'plus' : 'minus')}
+            ${tile('回収率', pct(t.r, t.w, 1))}
+            ${tile('的中率', pct(t.hit, t.n))}
+            ${tile('購入レース', t.n.toLocaleString())}
+            ${tile('購入合計', yen(t.w))}
+            ${tile('払戻合計', yen(t.r))}
+          </div>
+          <div class="bests">
+            <div><span class="lbl">最高払戻(1 レース)</span> ${best}</div>
+            <div><span class="lbl">最高倍率の的中(払戻÷購入)</span> ${bo}</div>
+            <div class="sub">追加入金 ${P.topups} 回 / モードのリセット ${P.resets} 回</div>
+          </div>
+          <h3>通算収支の推移</h3>
+          ${curveSvg(P.curve)}
+          <div class="cols2">
+            <div><h3>モード別</h3><div class="tablewrap"><table class="entries rec">${head('レース')}<tbody>
+              ${Object.keys(MODE_LABEL).map(m => recRow(MODE_LABEL[m], P.byMode[m])).join('')}</tbody></table></div></div>
+            <div><h3>券種別</h3><div class="tablewrap"><table class="entries rec">${head('件数')}<tbody>
+              ${E.BET_TYPES.map(b => recRow(b.label, P.byType[b.key])).join('')}</tbody></table></div></div>
+          </div>
+          <h3>セーブデータ</h3>
+          <p class="note">所持金・開催・総成績はこのブラウザに自動で保存されています。別のブラウザやパソコンに移すときや、控えを取るときは書き出してください。</p>
+          <div class="savebtns">
+            <button class="ghost" data-act="export">⬇ セーブデータを書き出す</button>
+            <button class="ghost" data-act="import">⬆ セーブデータを読み込む</button>
+            <button class="ghost danger" data-act="resetstats">総成績をリセット</button>
+            <input type="file" id="importFile" accept="application/json,.json" hidden>
+          </div>
+          <button class="primary" data-act="closestats">閉じる</button>
+        </div>
+      </div>`;
+  }
+
+  // ---------- セーブデータの書き出し・読み込み ----------
+  function collectData() {
+    persist(); saveProfile();
+    const data = {};
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('keiba-sim')) data[k] = localStorage.getItem(k);
+      }
+    } catch (e) { /* 保存領域が使えない */ }
+    return { app: 'keiba-sim', v: 1, exported: new Date().toISOString(), data };
+  }
+  function exportData() {
+    const j = collectData();
+    const d = new Date(), ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(j)], { type: 'application/json' }));
+    a.download = `keiba-sim-save-${ymd}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    return j;
+  }
+  function importData(file) {
+    if (!file) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      let j;
+      try { j = JSON.parse(rd.result); } catch (e) { j = null; }
+      if (!j || j.app !== 'keiba-sim' || !j.data || typeof j.data !== 'object') { alert('KEIBA SIM のセーブデータではありません'); return; }
+      if (!confirm('読み込むと、このブラウザのセーブデータ(全モードと総成績)を置き換えます。よろしいですか?')) return;
+      applyImport(j);
+    };
+    rd.readAsText(file);
+  }
+  function applyImport(j) {
+    if (room) leaveRoom(false);
+    try {
+      const old = [];
+      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('keiba-sim')) old.push(k); }
+      old.forEach(k => localStorage.removeItem(k));
+      for (const [k, v] of Object.entries(j.data)) if (k.startsWith('keiba-sim') && typeof v === 'string') localStorage.setItem(k, v);
+    } catch (e) { alert('保存領域に書き込めませんでした'); return; }
+    save = null; // 読み込んだデータを上書きしないように
+    location.reload();
+  }
+
+  // ---------- マルチプレイ ----------
+  // ホストが発走させるレース(発走対象)を選び、全員が「賭け終えた」を押すと全員の画面で同時に発走する。
+  // 結果はシードで決まるので、送るのは「どのレースを走らせるか」だけ。各自の画面で同じ着順になる。
+  // 参加した時は、ホストの開催の記録(過去の開催日の結果と今日の確定分)を受け取ってデータベースを作り直す。
+  const cleanName = v => String(v || '').replace(/[<>&"'`]/g, '').trim().slice(0, 12);
+  const playerName = () => profile.name || 'ゲスト';
+  const myPlayer = () => room && room.players.find(p => p.id === room.me);
+  const targetOpen = () => room && room.target && infoOf(room.target) && !rstate(room.target).done;
+
+  function renderLobby() {
+    const st = ui.mpStyle;
+    return `
+      <section class="card lobby">
+        <h2>マルチプレイ</h2>
+        <p>同じレースに全員で賭けて、全員が「賭け終えた」を押すと一斉に発走します。所持金は各自 ${yen(START_MONEY)} から。成績は総成績の「マルチ」にも記録されます。</p>
+        <label class="pname-l">あなたの名前 <input class="pname" id="mpName" maxlength="12" value="${esc(profile.name)}" placeholder="例:たろう"></label>
+        ${ui.busy ? `<p class="busy"><span class="spinner small"></span>${esc(ui.busy)}</p>` : ''}
+        ${ui.lobbyError ? `<p class="error">${esc(ui.lobbyError)}</p>` : ''}
+        <div class="lobbycols">
+          <div class="lobbybox">
+            <h3>ルームを作る</h3>
+            <div class="types">${['normal', 'graded'].map(m => `<button class="chip ${st === m ? 'on' : ''}" data-mpstyle="${m}">${MODE_LABEL[m]}</button>`).join('')}</div>
+            <p class="note">${st === 'graded' ? '重賞レースだけを順に遊びます(1 日 1〜3 レース)。' : '1 日 3 場 36 レース。発走させるレースはホストが選びます。'}</p>
+            <button class="primary" data-act="mpcreate" ${ui.busy ? 'disabled' : ''}>ルームを作る</button>
+            <p class="note">作るとルームコード(英数字 5 文字)が出ます。参加する人に伝えてください。</p>
+          </div>
+          <div class="lobbybox">
+            <h3>ルームに参加</h3>
+            <input id="mpCode" class="code" maxlength="5" placeholder="ABCDE" autocomplete="off" spellcheck="false">
+            <button class="primary" data-act="mpjoin" ${ui.busy ? 'disabled' : ''}>参加する</button>
+            <p class="note">ホストから聞いたルームコードを入れてください。</p>
+          </div>
+        </div>
+        <p class="note">※ ${KeibaNet.LOCAL ? 'テスト用:同じブラウザ内のタブ同士でつなぎます' : '接続の仲介に PeerJS の公開サーバーを使い、つながった後はブラウザ同士で直接やりとりします。会社や学校のネットワークでは接続できないことがあります'}。ホストがページを閉じるとルームは終わります。</p>
+      </section>`;
+  }
+
+  function mpBarInner() {
+    const ps = room.players.slice().sort((a, b) => b.bankroll - a.bankroll);
+    const t = room.target && infoOf(room.target);
+    return `
+      <span class="mpcode">ルーム <b>${room.code}</b><button class="chip small" data-act="copycode">コピー</button></span>
+      <span class="sub">${MODE_LABEL[room.style]}${room.host ? '・あなたがホスト' : ''}${t && targetOpen() ? `・発走対象 ${E.COURSES[t.venueIdx].venue}${t.raceNo}R` : ''}</span>
+      ${room.closed ? '<b class="minus">ホストとの接続が切れました</b>' : ''}
+      <span class="mplist">${ps.map(p => `<span class="mpp ${p.ready ? 'ready' : ''} ${p.id === room.me ? 'me' : ''}" title="${p.ready ? '賭け終えた' : '検討中'}">${p.ready ? '✅' : '⏳'} ${esc(p.name)} <b>${yen(p.bankroll)}</b> <small class="${p.pl >= 0 ? 'plus' : 'minus'}">${signedYen(p.pl)}</small></span>`).join('')}</span>
+      <button class="ghost" data-act="mpleave">${room.host ? 'ルームを閉じる' : '退出'}</button>`;
+  }
+  function mpReadyInner() {
+    const p = myPlayer();
+    if (!p || room.closed) return '<p class="hint">ホストとの接続が切れました。上の「退出」からロビーに戻れます。</p>';
+    const n = room.players.length, k = room.players.filter(x => x.ready).length, bought = curState().tickets.length;
+    return `${p.ready
+      ? '<button class="post ready" data-act="mpunready">✅ 賭け終えました(取り消す)</button>'
+      : `<button class="post" data-act="mpready">🏁 賭け終えた${bought ? '' : '(見送り)'}</button>`}
+      <p class="note center">${k}/${n} 人が賭け終えました。全員そろうと発走します</p>
+      ${room.host && k < n ? '<button class="ghost wide" data-act="mpforce">待たずに発走</button>' : ''}`;
+  }
+  function mpResultInner() {
+    const ps = room.players.slice().sort((a, b) => b.bankroll - a.bankroll);
+    return `<table class="entries mpres"><thead><tr><th>順位</th><th>プレイヤー</th><th>このレース(購入→払戻)</th><th>所持金</th><th>ルーム収支</th></tr></thead><tbody>${ps.map((p, i) => {
+      const l = p.last && p.last.key === save.sel && p.last.day === save.meet.day ? p.last : null;
+      const now = l ? (l.spent ? `${yen(l.spent)} → <b class="${l.back - l.spent >= 0 ? 'plus' : 'minus'}">${yen(l.back)}</b>` : '<span class="sub">見送り</span>') : '<span class="sub">—</span>';
+      return `<tr class="${p.id === room.me ? 'mine' : ''}"><td>${i + 1}</td><td>${esc(p.name)}</td><td>${now}</td><td>${yen(p.bankroll)}</td><td class="${p.pl >= 0 ? 'plus' : 'minus'}">${signedYen(p.pl)}</td></tr>`;
+    }).join('')}</tbody></table>`;
+  }
+  // 中継中以外の画面にある参加者の表示だけを書き換える(馬柱のスクロール位置などを保つ)
+  function updateMp() {
+    if (!room) return;
+    const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+    set('mpbar', mpBarInner());
+    if (save && save.meet && world) { set('mpready', mpReadyInner()); set('mpresult', mpResultInner()); }
+  }
+  // 中継が終わるまで待つ処理(発走の合図など)
+  function flushRoom() {
+    while (room && !anim && room.queue.length) room.queue.shift()();
+  }
+
+  async function createRoom() {
+    if (ui.busy) return;
+    const nm = $('#mpName');
+    if (nm) { profile.name = cleanName(nm.value); saveProfile(); }
+    ui.busy = 'ルームを作成中…'; ui.lobbyError = ''; render();
+    let net;
+    try { net = await KeibaNet.host({ onJoin: () => {}, onMsg: hostMsg, onLeave: hostLeave }); }
+    catch (e) { ui.busy = ''; ui.lobbyError = e.message; render(); return; }
+    ui.busy = '';
+    if (mode !== 'multi' || room) { net.close(); return; }
+    room = { code: net.code, host: true, style: ui.mpStyle, me: 'host', net, queue: [], pendingDay: 0, target: null,
+      players: [{ id: 'host', name: playerName(), ready: false, bankroll: START_MONEY, pl: 0, last: null }] };
+    save = { ...defaultSave(), ...lastPrefs };
+    startWorld(() => { room.target = nextKey(); selectRace(room.target); syncPlayers(); });
+  }
+  async function joinRoom(code) {
+    if (ui.busy) return;
+    const nm = $('#mpName');
+    if (nm) { profile.name = cleanName(nm.value); saveProfile(); }
+    ui.busy = 'ルームに接続中…'; ui.lobbyError = ''; render();
+    let net;
+    try { net = await KeibaNet.join(code, { onMsg: guestMsg, onClose: hostGone }); }
+    catch (e) { ui.busy = ''; ui.lobbyError = e.message; render(); return; }
+    ui.busy = '';
+    if (mode !== 'multi' || room) { net.close(); return; }
+    room = { code: String(code).trim().toUpperCase(), host: false, style: 'normal', me: null, net, queue: [], pendingDay: 0, target: null, players: [] };
+    showLoading('ルームの情報を受信中…', '');
+    net.send({ t: 'hello', name: playerName() });
+  }
+  function leaveRoom(ask) {
+    if (!room) return true;
+    if (ask && !confirm(room.host ? 'ルームを閉じますか?参加者との接続も切れます。' : 'ルームから退出しますか?')) return false;
+    try { if (room.host) room.net.broadcast({ t: 'bye' }); room.net.close(); } catch (e) { /* 切断済み */ }
+    clearTimeout(room.startTimer);
+    if (save) lastPrefs = Object.fromEntries(PREF_FIELDS.filter(k => save[k] !== undefined).map(k => [k, save[k]]));
+    if (anim) { clearInterval(anim.timer); anim = null; KeibaSound.stop(); KeibaSound.hush(); KeibaSound.crowd(0); }
+    room = null; save = null; world = null; race = null; result = null; cart = [];
+    return true;
+  }
+  function hostGone() {
+    if (!room || room.host || room.closed) return;
+    room.closed = true;
+    room.queue = [];
+    if (!anim && save && world) render();
+    else if (!save) { leaveRoom(false); ui.lobbyError = 'ホストとの接続が切れました'; render(); }
+  }
+
+  // ホスト側:参加者からの連絡
+  function hostMsg(id, m) {
+    if (!room || !room.host || !m) return;
+    if (!world || !save.meet) { setTimeout(() => hostMsg(id, m), 300); return; }
+    const p = room.players.find(x => x.id === id);
+    if (m.t === 'hello') {
+      if (!p) room.players.push({ id, name: cleanName(m.name) || 'ゲスト', ready: false, bankroll: START_MONEY, pl: 0, last: null });
+      // 今日の確定分(結果だけ。馬券は各自のもの)
+      const races = Object.fromEntries(Object.entries(save.meet.races).filter(([, st]) => st.done && st.res)
+        .map(([k, st]) => [k, { tickets: [], done: true, skipped: !!st.skipped, winnerNo: st.winnerNo, winner: st.winner, res: st.res }]));
+      room.net.send(id, { t: 'welcome', id, style: room.style, worldSeed: save.worldSeed, worldLog: save.worldLog, day: save.meet.day, races, target: room.target, players: room.players });
+      syncPlayers();
+      return;
+    }
+    if (!p) return;
+    if (m.t === 'ready') { p.ready = !!m.ready && m.key === room.target && targetOpen(); syncPlayers(); maybeStart(); }
+    else if (m.t === 'score') { Object.assign(p, { bankroll: +m.bankroll || 0, pl: +m.pl || 0, last: m.last || null }); syncPlayers(); }
+  }
+  function hostLeave(id) {
+    if (!room || !room.host) return;
+    room.players = room.players.filter(p => p.id !== id);
+    syncPlayers(); maybeStart();
+  }
+  function syncPlayers() {
+    if (!room || !room.host || !save || !save.meet) return;
+    room.net.broadcast({ t: 'players', players: room.players, target: room.target, day: save.meet.day });
+    updateMp();
+  }
+  function maybeStart() {
+    if (!room || !room.host || !targetOpen() || !room.players.every(p => p.ready)) return;
+    clearTimeout(room.startTimer);
+    room.startTimer = setTimeout(() => { if (room && targetOpen() && room.players.every(p => p.ready)) startRoomRace(); }, 800);
+  }
+  function startRoomRace() {
+    if (!targetOpen()) return;
+    const key = room.target, day = save.meet.day;
+    room.players.forEach(p => { p.ready = false; });
+    room.net.broadcast({ t: 'start', key, day });
+    syncPlayers();
+    room.queue.push(() => runRoomRace(key, day));
+    flushRoom();
+  }
+  function setTarget(key) {
+    if (!room || !room.host || !key || !infoOf(key) || rstate(key).done) return;
+    room.target = key;
+    room.players.forEach(p => { p.ready = false; });
+    syncPlayers();
+    selectRace(key);
+  }
+
+  // 参加者側:ホストからの連絡
+  function guestMsg(m) {
+    if (!room || room.host || !m) return;
+    switch (m.t) {
+      case 'welcome':
+        Object.assign(room, { me: m.id, style: m.style, players: m.players, target: m.target, pendingDay: m.day });
+        save = { ...defaultSave(), ...lastPrefs, worldSeed: m.worldSeed, worldLog: m.worldLog };
+        save.meet = { gen: MEET_GEN, day: m.day, races: m.races };
+        showLoading();
+        setTimeout(() => {
+          if (!room) return;
+          buildWorld();
+          selectRace(targetOpen() ? room.target : nextKey());
+          flushRoom();
+        }, 30);
+        break;
+      case 'players': {
+        const prev = room.target;
+        room.players = m.players; room.target = m.target;
+        room.pendingDay = Math.max(room.pendingDay, m.day);
+        if (!world) break;
+        if (m.target !== prev) followTarget();
+        updateMp();
+        break;
+      }
+      case 'start':
+        room.queue.push(() => runRoomRace(m.key, m.day));
+        if (world) flushRoom();
+        break;
+      case 'bye': hostGone(); break;
+    }
+  }
+  // ホストが進めた開催日まで追いつく(結果は同じシードで決まるので、自分の画面で同じように確定させる)
+  function catchUp() {
+    while (room && room.pendingDay > save.meet.day) advanceDay();
+  }
+  // 発走対象が変わったら移動する(結果を見ている途中なら、「次のレースへ」を押した時に移動)
+  function followTarget() {
+    if (anim || !world) return;
+    if (race && save.sel && rstate(save.sel).done) { updateMp(); return; }
+    catchUp();
+    if (targetOpen()) selectRace(room.target);
+    else render();
+  }
+  function runRoomRace(key, day) {
+    if (day > save.meet.day) { room.pendingDay = Math.max(room.pendingDay, day); catchUp(); }
+    if (!infoOf(key) || rstate(key).done) return;
+    const p = myPlayer();
+    if (p) p.ready = false;
+    showHistory = false; showStats = false;
+    post(key);
+  }
+  function setReady(v) {
+    const p = myPlayer();
+    if (!p || room.closed) return;
+    if (v && (save.sel !== room.target || !targetOpen())) return;
+    if (v && cart.length && !confirm('カートに未購入の馬券があります。破棄して「賭け終えた」にしますか?')) return;
+    if (v) cart = [];
+    p.ready = v;
+    if (room.host) { syncPlayers(); maybeStart(); } else room.net.send({ t: 'ready', ready: v, key: room.target });
+    render();
+  }
+  function reportScore(key, spent = 0, back = 0) {
+    const p = myPlayer();
+    if (!p) return;
+    p.bankroll = save.bankroll;
+    p.pl = save.stats.returned - save.stats.wagered;
+    if (key) p.last = { day: save.meet.day, key, spent, back };
+    if (room.host) syncPlayers();
+    else room.net.send({ t: 'score', bankroll: p.bankroll, pl: p.pl, last: p.last });
+  }
+  function nextInRoom() {
+    if (room.host) {
+      const k = nextKey();
+      if (k && k !== room.target) { room.target = k; room.players.forEach(p => { p.ready = false; }); syncPlayers(); }
+      selectRace(k);
+      return;
+    }
+    catchUp();
+    selectRace(targetOpen() ? room.target : nextKey());
+  }
+  function nextDayInRoom() {
+    if (room.host) {
+      advanceDay();
+      room.target = nextKey();
+      room.players.forEach(p => { p.ready = false; });
+      syncPlayers();
+      selectRace(room.target);
+      return;
+    }
+    catchUp();
+    selectRace(targetOpen() ? room.target : nextKey());
+  }
+  window.addEventListener('beforeunload', () => { if (room) leaveRoom(false); });
 
   // ---------- レース再生 ----------
   const PRE_ROLL = 3; // ゲートイン完了から発走までの秒数
@@ -1211,7 +1799,7 @@
       anim.done = true;
       clearInterval(anim.timer);
       const finished = anim;
-      setTimeout(() => { if (anim === finished) { anim = null; KeibaSound.crowd(0); render(); } }, finished.skipped ? 700 : 4200);
+      setTimeout(() => { if (anim === finished) { anim = null; KeibaSound.crowd(0); render(); flushRoom(); } }, finished.skipped ? 700 : 4200);
     }
   }
 
@@ -1221,6 +1809,7 @@
   window.__keiba = {
     get race() { return race; }, get result() { return result; }, get save() { return save; }, get anim() { return anim; }, get tv() { return tv; }, ui,
     get cur() { return curState(); }, get world() { return world; }, schedule, nextKey, targetKey, rstate, header,
+    get mode() { return mode; }, get room() { return room; }, get profile() { return profile; }, switchMode, collectData, applyImport, setReady,
   };
 
   init();

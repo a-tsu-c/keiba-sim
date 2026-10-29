@@ -797,6 +797,8 @@
 
   // 開催日(プレイ中)の出馬表。前日までの結果を反映済みの世界から作る
   function meetCard(W, day, seedBase) { return dayCard(W, raceDate(day), `${W.seed}|meet|${seedBase}|${day}`); }
+  // 遊ばないレース(重賞のみモードの平場など)は過去の期間と同じ速い計算で確定させる。同じシードなら同じ結果
+  function quickResolve(W, def, seedStr) { return recordRace(W, def, quickRun(W, def, rngFor('quick', seedStr))); }
 
   // テスト・較正用:世界の馬から条件に合う馬を集めた 1 レース(出馬表とは別に、シードごとに違うメンバー)
   function adhocDef(W, { seed, raceNo = 11, venueIdx = 0, day = 1, slot = 0 }) {
@@ -1327,7 +1329,7 @@
 
   return {
     mulberry32, hashStr, gauss, COURSES, CLASSES, BET_TYPES, BET, STYLES, GOING,
-    PACE, EARLY, KICK_STYLE, SIM, MARKET, SPEED, QUICK, createWorld, defaultWorld, meetCard, adhocDef, recordRace, resultRows, packRows, unpackRows, timeFromPerf, perfFromTime, abilityAt, gradedOn, bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
+    PACE, EARLY, KICK_STYLE, SIM, MARKET, SPEED, QUICK, createWorld, defaultWorld, meetCard, quickResolve, adhocDef, recordRace, resultRows, packRows, unpackRows, timeFromPerf, perfFromTime, abilityAt, gradedOn, bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
     odds, placePay, placeRange, payFromOdds, settlePayouts, expandCombos, createTicket, ticketReturn,
     bracketSold, formatTime, fmtDate, daySchedule, fmtClock, TIPSTERS, GRADED, NAME_WITTY, NAME_JP, NAME_PHRASE, FAMOUS_HORSES, horseNameKind, JOCKEYS, record, marginText, comboProb, canonical, comboKey, harvilleTop3,
   };

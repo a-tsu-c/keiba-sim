@@ -293,6 +293,56 @@
   .modalbox { background: var(--panel); border-radius: 12px; padding: 16px; width: min(760px, 100%); max-height: 85vh; overflow: auto; }
   .modalbox .primary { margin-top: 12px; }
 
+  /* ---------- モード・総成績・マルチプレイ ---------- */
+  .modes { display: flex; gap: 4px; flex-wrap: wrap; }
+  .modes .chip { padding: 3px 12px; }
+  .pc.target { border: 2px solid var(--hot); }
+  .mpbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; margin-bottom: 10px; font-size: 13px; }
+  .mpcode b { font: 800 16px/1 ui-monospace, Menlo, monospace; letter-spacing: 2px; margin: 0 6px; }
+  .mplist { display: flex; flex-wrap: wrap; gap: 4px 8px; flex: 1; }
+  .mpp { background: var(--chip); border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+  .mpp.me { outline: 2px solid var(--accent); }
+  .mpp.ready { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); }
+  .post.ready { background: var(--accent); }
+  .ghost.wide { width: 100%; margin-top: 6px; padding: 8px; }
+  .settarget { margin-top: 10px; }
+  .lobby { max-width: 900px; margin: 0 auto; }
+  .lobby p { line-height: 1.6; }
+  .lobbycols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+  @media (max-width: 700px) { .lobbycols { grid-template-columns: 1fr; } }
+  .lobbybox { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .lobbybox h3 { margin: 0; }
+  .pname-l { display: inline-flex; align-items: center; gap: 8px; margin: 4px 0 8px; }
+  .pname, .code { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); font: inherit; }
+  .code { width: 9em; font: 700 20px/1.2 ui-monospace, Menlo, monospace; letter-spacing: 3px; text-transform: uppercase; }
+  .busy { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+  .error { color: var(--minus); font-weight: 600; }
+  .spinner.small { width: 16px; height: 16px; border-width: 2px; margin: 0; }
+  .mpresult { margin-top: 12px; }
+  .mpres td, .mpres th { white-space: nowrap; }
+  .modalbox.stats { width: min(940px, 100%); }
+  .modalbox h3 { font-size: 14px; margin: 14px 0 6px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 6px 0 10px; }
+  .tile { background: var(--chip); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; }
+  .tile .lbl, .bests .lbl { color: var(--muted); font-size: 12px; }
+  .tile b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .bests { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+  .bests .lbl { margin-right: 6px; }
+  .curve { position: relative; }
+  .curve svg { width: 100%; height: auto; display: block; }
+  .curve .zero { stroke: var(--line); stroke-width: 1; }
+  .curve .ax { fill: var(--muted); font-size: 11px; }
+  .curve .ln { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .curve .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .curve .dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+  .ctip { position: absolute; top: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 860px) { .cols2 { grid-template-columns: 1fr; } }
+  .entries.rec th, .entries.rec td { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .entries.rec tbody th { color: var(--fg); }
+  .savebtns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ghost.danger { color: var(--minus); }
+
   /* ---------- デスクトップ:スクロールなしで画面に収める ---------- */
   @media (min-width: 1100px) and (min-height: 640px) {
     html, body { height: 100%; overflow: hidden; }
@@ -321,7 +371,10 @@
     .card-mode .tablewrap thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
     .card-mode .bet { position: static; max-height: none; height: 100%; overflow-y: auto; }
     /* 結果 */
-    .result-mode .scrollpane { flex: 1; min-height: 0; overflow: auto; }
+    .result-mode .scrollpane, .fill > .scrollpane { flex: 1; min-height: 0; overflow: auto; }
+    .mpbar { margin: 0; flex: none; padding: 4px 12px; }
+    .card-mode .bet #mpready { position: sticky; bottom: -10px; background: var(--panel); padding: 2px 0 8px; margin-top: 8px; }
+    .card-mode .bet #mpready .post { margin-top: 6px; }
     /* 中継 */
     .race-mode .raceview { flex: 1; min-height: 0; padding: 10px; }
     .race-mode .rvmain { display: grid; grid-template-rows: minmax(0, 1fr) auto 150px; gap: 6px; min-height: 0; height: 100%; }
@@ -343,6 +396,7 @@
 <script src="engine.js"></script>
 <script src="tv.js"></script>
 <script src="sound.js"></script>
+<script src="net.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

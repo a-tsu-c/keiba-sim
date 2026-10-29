@@ -13,22 +13,24 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const f = document.getElementById('f');
   const errors = [];
-  localStorage.removeItem('keiba-sim-v1');
+  Object.keys(localStorage).filter(k => k.startsWith('keiba-sim')).forEach(k => localStorage.removeItem(k));
 
-  function load() {
+  function load(frame = f, url = 'index.html?net=local&') {
     return new Promise(res => {
-      f.onload = () => {
-        const w = f.contentWindow;
+      frame.onload = () => {
+        const w = frame.contentWindow;
         w.addEventListener('error', e => errors.push(e.message));
         w.alert = m => { w.__alerts = (w.__alerts || []).concat(m); };
         w.confirm = () => true;
         // データベースの作成(1 秒ほど)を待つ
-        const wait = () => (w.__keiba && w.__keiba.race ? res(w) : setTimeout(wait, 50));
+        const wait = () => (w.__keiba && (w.__keiba.race || w.__keiba.mode === 'multi') ? res(w) : setTimeout(wait, 50));
         wait();
       };
-      f.src = 'index.html?' + Math.random();
+      frame.src = url + Math.random();
     });
   }
+  const until = async (fn, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (fn()) return true; } catch (e) { /* まだ */ } await sleep(50); } return false; };
+  const setVal = (w, sel, v) => { const el = w.document.querySelector(sel); el.value = v; el.dispatchEvent(new w.Event('change', { bubbles: true })); };
   const click = (w, sel) => {
     const el = w.document.querySelector(sel);
     if (!el) throw new Error('not found: ' + sel);
@@ -246,6 +248,123 @@
     await sleep(100);
     for (let k = 0; k < 100 && !w.document.getElementById('bankroll'); k++) await sleep(50);
     log(text(w, '#bankroll') === '¥100,000', 'リセットで初期化');
+
+    // ---------- 重賞のみモード ----------
+    const normalDay = K().save.meet.day;
+    click(w, '[data-mode="graded"]');
+    await until(() => K().mode === 'graded' && K().race);
+    const gs = K().schedule();
+    log(gs.races.length >= 1 && gs.races.every(r => r.def.cls.grade), '重賞のみ: 番組は重賞だけ ' + gs.races.map(r => K().header(r).name).join('・'));
+    log(w.document.querySelectorAll('.program .pc[data-race]').length === gs.races.length, '番組表に重賞だけ並ぶ');
+    log(text(w, '#bankroll') === '¥100,000', '重賞のみは 12R とは別の所持金');
+    const gfav = K().race.market.pop.indexOf(1) + 1;
+    click(w, '[data-type="win"]'); click(w, `[data-row="0"][data-val="${gfav}"]`); click(w, '[data-act="add"]'); click(w, '[data-act="buy"]');
+    click(w, '[data-act="post"]');
+    await sleep(200);
+    click(w, '[data-act="skip"]');
+    await until(() => !K().anim && w.document.querySelector('.result'));
+    log(K().cur.done && K().profile.byMode.graded && K().profile.byMode.graded.n === 1, '重賞のみの結果が総成績(重賞のみ)に記録');
+    // 残りの重賞を見送りで走らせて翌開催日へ
+    while (K().nextKey()) {
+      click(w, '[data-act="next"]');
+      click(w, '[data-act="post"]');
+      await sleep(150);
+      click(w, '[data-act="skip"]');
+      await until(() => !K().anim);
+    }
+    click(w, '[data-act="next"]');
+    log(/重賞全/.test(text(w, '.dayend h2')), '重賞が終わると翌開催日へ: ' + text(w, '.dayend h2'));
+    const nRaces = K().world.races.length, gday = K().save.meet.day;
+    click(w, '[data-act="nextday"]');
+    const lastLog = K().save.worldLog[K().save.worldLog.length - 1];
+    log(lastLog.q === 1 && K().world.races.length - nRaces >= 20, `平場は速い計算で確定してデータベースへ(+${K().world.races.length - nRaces} レース)`);
+    log(K().save.meet.day > gday && K().schedule().races.length >= 1 && K().schedule().races.every(r => r.def.cls.grade), `翌開催日(${K().race.dateLabel})も重賞のみ`);
+    const sig = () => { const rs = K().world.races; const r = rs[rs.length - 1]; return rs.length + ':' + r.e.map(x => x.hid + '/' + x.pos).join(','); };
+    const sigBefore = sig(), selBefore = K().save.sel;
+    w = await load();
+    log(K().mode === 'graded' && sig() === sigBefore && K().save.sel === selBefore, '再読み込みで同じデータベースを作り直す(重賞のみ・平場は再計算)');
+
+    // ---------- 総成績・セーブデータ ----------
+    click(w, '[data-act="stats"]');
+    log(!!w.document.querySelector('.modalbox.stats') && w.document.querySelectorAll('.stats .tile').length === 6, '総成績の画面(6 項目)');
+    const statRows = [...w.document.querySelectorAll('.stats table.rec')[0].querySelectorAll('tbody tr')].map(r => r.textContent);
+    log(statRows.length === 3 && /^12R/.test(statRows[0]) && /^重賞のみ/.test(statRows[1]) && /^マルチ/.test(statRows[2]), 'モード別の成績(12R・重賞のみ・マルチ)');
+    log(w.document.querySelectorAll('.stats table.rec')[1].querySelectorAll('tbody tr').length === 8, '券種別の成績(8 券種)');
+    const P = K().profile;
+    log(P.total.n === (P.byMode.normal || { n: 0 }).n + P.byMode.graded.n && P.total.w > 0, `通算 = モード別の合計(${P.total.n} レース)`);
+    log(!!w.document.querySelector('#curve svg polyline'), '通算収支の推移グラフ');
+    setVal(w, '#pName', 'テスト太郎');
+    log(K().profile.name === 'テスト太郎', 'プレイヤー名を保存');
+    const dump = K().collectData();
+    log(['keiba-sim-v1', 'keiba-sim-graded-v1', 'keiba-sim-profile', 'keiba-sim-mode'].every(k => typeof dump.data[k] === 'string'), 'セーブデータを書き出せる(全モード+総成績)');
+    click(w, '.modalbox [data-act="closestats"]');
+    const resets0 = K().profile.resets, n0 = P.total.n;
+    click(w, '[data-act="reset"]');
+    await until(() => K().race && K().save.history.length === 0);
+    log(text(w, '#bankroll') === '¥100,000' && K().profile.total.n === n0 && K().profile.resets === resets0 + 1, 'モードのリセットでは総成績は消えない');
+    K().applyImport(dump);
+    await sleep(300);
+    w = await load();
+    log(K().mode === 'graded' && K().save.history.length > 0 && K().profile.name === 'テスト太郎', 'セーブデータを読み込むと元に戻る');
+    click(w, '[data-mode="normal"]');
+    await until(() => K().mode === 'normal' && K().race);
+    log(K().save.meet.day === normalDay, '12R に戻すと 12R の開催の続き(' + normalDay + '日目)');
+
+    // ---------- マルチプレイ(同じブラウザの 2 画面で) ----------
+    const g = document.createElement('iframe');
+    g.style.cssText = 'width:1280px;height:900px;border:0';
+    document.body.appendChild(g);
+    click(w, '[data-mode="multi"]');
+    log(!!w.document.querySelector('.lobby') && !!w.document.querySelector('[data-act="mpcreate"]'), 'マルチ: ロビー(ルームを作る・参加する)');
+    click(w, '[data-mpstyle="graded"]');
+    click(w, '[data-act="mpcreate"]');
+    await until(() => K().room && K().race);
+    const code = K().room.code;
+    log(/^[A-Z0-9]{5}$/.test(code) && text(w, '#mpbar').includes(code), 'ルームを作るとコードを表示: ' + code);
+    log(K().room.style === 'graded' && K().schedule().races.every(r => r.def.cls.grade), 'ホストが選んだ番組(重賞のみ)');
+    let v = await load(g);
+    const G = () => v.__keiba;
+    click(v, '[data-mode="multi"]');
+    v.document.getElementById('mpCode').value = code.toLowerCase();
+    v.document.getElementById('mpName').value = 'ゲスト花子';
+    click(v, '[data-act="mpjoin"]');
+    await until(() => G().room && G().race && K().room.players.length === 2);
+    log(K().room.players.length === 2 && G().room.players.length === 2, '参加すると両方に 2 人が並ぶ: ' + K().room.players.map(p => p.name).join('・'));
+    log(G().save.worldSeed === K().save.worldSeed && G().race.name === K().race.name && G().race.horses.map(h => h.id).join() === K().race.horses.map(h => h.id).join(), '同じデータベース・同じ出馬表: ' + G().race.name);
+    log(G().race.market.winPay.join() === K().race.market.winPay.join(), '同じオッズ');
+    const gf = G().race.market.pop.indexOf(1) + 1;
+    click(v, '[data-type="win"]'); click(v, `[data-row="0"][data-val="${gf}"]`); click(v, '[data-act="add"]'); click(v, '[data-act="buy"]');
+    click(v, '[data-act="mpready"]');
+    await until(() => K().room.players.find(p => p.id !== 'host').ready);
+    log(K().room.players.find(p => p.id !== 'host').ready && !K().anim, '参加者が賭け終えるとホストに ✅(全員そろうまで発走しない)');
+    log(G().save.bankroll === 100000 - 100 && v.document.querySelector('[data-act="add"]').disabled, '賭け終えた後は馬券を追加できない');
+    click(w, '[data-act="mpready"]');
+    await until(() => K().anim && G().anim);
+    log(!!K().anim && !!G().anim, '全員が賭け終えると両方の画面で発走');
+    log(K().result.order.join() === G().result.order.join() && K().save.sel === G().save.sel, '両方で同じ着順: ' + K().result.order.slice(0, 3).join('-'));
+    click(w, '[data-act="skip"]'); click(v, '[data-act="skip"]');
+    await until(() => !K().anim && !G().anim && w.document.querySelector('#mpresult') && v.document.querySelector('#mpresult'));
+    await until(() => (K().room.players.find(p => p.id !== 'host').last || {}).key === K().save.sel);
+    const gp = K().room.players.find(p => p.id !== 'host');
+    log(gp.last.spent === 100 && gp.bankroll === G().save.bankroll, 'ホストに参加者の成績が届く: ' + gp.name + ' ' + gp.bankroll);
+    log(w.document.querySelectorAll('#mpresult tbody tr').length === 2, '結果画面にプレイヤーの成績表');
+    log(G().profile.byMode.multi && G().profile.byMode.multi.n === 1, '馬券を買った参加者の総成績(マルチ)に記録');
+    // 次のレース(または翌開催日)へ。待たずに発走
+    if (K().nextKey()) click(w, '[data-act="next"]'); else { click(w, '[data-act="next"]'); click(w, '[data-act="nextday"]'); }
+    await until(() => G().room.target === K().room.target);
+    click(v, '[data-act="next"]');
+    if (v.document.querySelector('[data-act="nextday"]')) click(v, '[data-act="nextday"]');
+    log(G().save.sel === K().room.target && K().save.sel === K().room.target && G().save.meet.day === K().save.meet.day, '次の発走対象に両方そろう: ' + K().race.name);
+    click(w, '[data-act="mpforce"]');
+    await until(() => K().anim && G().anim);
+    log(!!K().anim && !!G().anim && K().result.order.join() === G().result.order.join(), 'ホストは待たずに発走できる(同じ着順)');
+    click(w, '[data-act="skip"]'); click(v, '[data-act="skip"]');
+    await until(() => !K().anim && !G().anim);
+    click(w, '[data-act="mpleave"]');
+    await until(() => G().room && G().room.closed);
+    log(G().room.closed && text(v, '#mpbar').includes('切れました'), 'ホストが閉じると参加者に通知');
+    log(!!w.document.querySelector('.lobby'), 'ホストはロビーに戻る');
+    errors.push(...(v.__errs || []));
 
     log(errors.length === 0, 'JS エラーなし ' + errors.join(' | '));
   } catch (e) {
