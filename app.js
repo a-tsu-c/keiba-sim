@@ -19,12 +19,13 @@
   // ---------- 保存 ----------
   // meet: その日の開催(3 場 × 12R)。races[key] = { tickets, done, skipped, winnerNo, winner }
   function defaultSave() {
-    return { v: 2, bankroll: START_MONEY, topups: 0, speed: 4, view: 'paper', stats: { wagered: 0, returned: 0, races: 0, hitRaces: 0 }, history: [], meet: null, sel: null };
+    return { v: 2, bankroll: START_MONEY, topups: 0, speed: 4, view: 'paper', stats: { wagered: 0, returned: 0, races: 0, hitRaces: 0 }, history: [], meet: null, sel: null,
+      sound: true, side: true, tipsters: {} };
   }
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(KEY));
-      if (s && s.v === 2) return s;
+      if (s && s.v === 2) return { sound: true, side: true, tipsters: {}, ...s };
       if (s && s.v === 1) {
         // 旧形式(1 場ずつ):未精算の馬券は払い戻して引き継ぐ
         const refund = s.cur && s.cur.status !== 'done' ? s.cur.tickets.reduce((a, t) => a + t.cost, 0) : 0;
@@ -214,11 +215,43 @@
   const surfShort = s => (s === '芝' ? '芝' : 'ダ');
   const classTag = c => (c.grade ? `<span class="grade g${c.key.slice(1)}">${c.name}</span>` : c.key === 'op' ? '<span class="cls">OP</span>' : '');
 
+  // 勝ち馬のタイム(自分が勝った時は自分のタイム)
+  const winTime = p => p.time - Math.max(0, p.diff);
   function pastHtml(h) {
     return h.past.map(p => {
       const cls = p.pos === 1 ? 'p1' : p.pos === 2 ? 'p2' : p.pos === 3 ? 'p3' : p.pos <= 5 ? 'p5' : '';
-      return `<span class="past ${cls}" title="${p.dateLabel} ${p.venue} ${esc(p.raceName)} ${p.surface}${p.dist}m ${p.going} ${p.field}頭 ${p.pop}人気 ${p.pos}着">${p.pos}</span>`;
+      return `<span class="past ${cls}" title="${p.dateLabel} ${p.venue} ${esc(p.raceName)} ${p.surface}${p.dist}m ${p.going} ${p.field}頭 ${p.pop}人気 ${p.pos}着 タイム${E.formatTime(p.time)}(勝ち${E.formatTime(winTime(p))})">${p.pos}</span>`;
     }).join('');
+  }
+
+  // 予想家の印
+  const TIPS = E.TIPSTERS;
+  const tipMarks = i => race.market.tips.map(t => t.marks[i]);
+  function tipsCells(i) { return tipMarks(i).map((m, k) => `<td class="tip m${markClass(m)}" title="${TIPS[k].name}(${TIPS[k].style})">${m}</td>`).join(''); }
+  function tipsRow(i) {
+    return `<div class="tips">${tipMarks(i).map((m, k) => `<span class="tip m${markClass(m)}" title="${TIPS[k].name}(${TIPS[k].style})"><small>${TIPS[k].short[0]}</small>${m || '・'}</span>`).join('')}</div>`;
+  }
+  function markClass(m) { return { '◎': 1, '○': 2, '▲': 3, '△': 4, '☆': 5 }[m] || 0; }
+  // 予想家の成績(◎の単勝成績。このブラウザで再生したレースが対象)
+  function tipsterBoard() {
+    const rows = TIPS.map(t => {
+      const r = save.tipsters[t.id] || { n: 0, win: 0, top3: 0, ret: 0 };
+      const pct = (a, b) => (b ? Math.round(a / b * 100) + '%' : '—');
+      return `<div class="tipster" title="${esc(t.desc)}"><b>${t.name}</b><span class="sub">${t.style}</span>
+        <span class="tstat">◎ 勝率 ${pct(r.win, r.n)} / 複勝率 ${pct(r.top3, r.n)} / 単回収 ${pct(r.ret, r.n * 100)}<span class="sub">(${r.n}R)</span></span></div>`;
+    }).join('');
+    return `<details class="tipboard"><summary>予想家 5 人の印<span class="sub">(${TIPS.map(t => `${t.short[0]}=${t.short}・${t.style}`).join(' / ')})</span></summary><div class="tiplist">${rows}</div></details>`;
+  }
+  function recordTipsters() {
+    const top3 = result.order.slice(0, 3);
+    race.market.tips.forEach((t, k) => {
+      const i = t.marks.indexOf('◎');
+      if (i < 0) return;
+      const r = save.tipsters[TIPS[k].id] ||= { n: 0, win: 0, top3: 0, ret: 0 };
+      r.n++;
+      if (result.order[0] === i + 1) { r.win++; r.ret += race.market.winPay[i]; }
+      if (top3.includes(i + 1)) r.top3++;
+    });
   }
 
   function silkSwatch(s) {
@@ -255,7 +288,7 @@
         <tr class="${mine.has(h.no) ? 'mine' : ''}">
           <td>${waku(h.bracket)}</td>
           <td class="no">${h.no}</td>
-          <td class="mark">${m.marks[i]}</td>
+          ${tipsCells(i)}
           <td class="hn"><div class="name">${silkSwatch(h.silks)}${esc(h.name)}</div><div class="sub">${h.sex}${h.age} ${h.coat}</div></td>
           <td>${h.kinryo.toFixed(1)}</td>
           <td class="jk">${esc(h.jockey.name)}</td>
@@ -264,7 +297,7 @@
           <td><span class="train t${h.trainingGrade}">${h.trainingGrade}</span></td>
           <td class="sub">${interval(h.layoff)}</td>
           <td>${rec(h.records.all)}</td>
-          <td class="lastrun">${last.venue} ${esc(last.raceName)} ${surfShort(last.surface)}${last.dist} <b>${last.pos}着</b><span class="sub">(${last.pop}人)</span></td>
+          <td class="lastrun">${last.venue} ${esc(last.raceName)} ${surfShort(last.surface)}${last.dist} <b>${last.pos}着</b> ${E.formatTime(last.time)}<span class="sub">(${last.pop}人)</span></td>
           <td class="pasts">${pastHtml(h)}</td>
           <td class="odds ${pop <= 3 ? 'hot' : ''}">${odds1(m.winPay[i])}</td>
           <td class="pop">${pop}</td>
@@ -275,9 +308,10 @@
       <section class="card">
         <h2>出馬表 <small>オッズは締切時点(確定)/近走は左が前走</small></h2>
         ${viewTabs()}
+        ${tipsterBoard()}
         <div class="tablewrap">
           <table class="entries">
-            <thead><tr><th>枠</th><th>馬番</th><th>印</th><th>馬名</th><th>斤量</th><th>騎手</th><th>馬体重</th><th>脚質</th><th>調教</th><th>間隔</th><th>通算</th><th>前走</th><th>近5走</th><th>単勝</th><th>人気</th><th>複勝</th></tr></thead>
+            <thead><tr><th>枠</th><th>馬番</th>${TIPS.map(t => `<th class="tip" title="${t.name}(${t.style})">${t.short[0]}</th>`).join('')}<th>馬名</th><th>斤量</th><th>騎手</th><th>馬体重</th><th>脚質</th><th>調教</th><th>間隔</th><th>通算</th><th>前走</th><th>近5走</th><th>単勝</th><th>人気</th><th>複勝</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -291,7 +325,8 @@
       <td class="run ${r.pos <= 3 ? 'r' + r.pos : ''}">
         <div class="rl"><span>${r.dateLabel} ${r.venue}</span><span>${r.pop}人気</span></div>
         <div class="rn">${esc(r.raceName)}${classTag(r.cls)}</div>
-        <div class="rp"><b class="pos">${r.pos}</b><span class="sub">着/${r.field}頭</span><span class="tm">${E.formatTime(r.time)}</span></div>
+        <div class="rp"><b class="pos">${r.pos}</b><span class="sub">着/${r.field}頭</span></div>
+        <div class="rt"><span class="sub">走破</span><b>${E.formatTime(r.time)}</b><span class="sub">勝ち ${E.formatTime(winTime(r))}</span></div>
         <div class="rc ${same ? 'same' : ''}">${surfShort(r.surface)}${r.dist} ${r.going} ${r.no}番</div>
         <div class="sub">${esc(r.jockey)} ${r.kinryo.toFixed(1)} ${r.weight}kg</div>
         <div>${r.passing} <span class="sub">上</span>${r.last3f.toFixed(1)}${r.last3fRank <= 3 ? `<b class="l3">${circled(r.last3fRank)}</b>` : ''}</div>
@@ -308,8 +343,9 @@
       return `
         <tr class="${mine.has(h.no) ? 'mine' : ''}">
           <td class="info">
-            <div class="ih">${waku(h.bracket)}<b class="no">${h.no}</b><span class="mark">${m.marks[i]}</span>
+            <div class="ih">${waku(h.bracket)}<b class="no">${h.no}</b>
               <span class="odds ${pop <= 3 ? 'hot' : ''}">${odds1(m.winPay[i])}</span><span class="sub">${pop}人気</span></div>
+            ${tipsRow(i)}
             <div class="name">${silkSwatch(h.silks)}${esc(h.name)}</div>
             <div class="sub">${h.sex}${h.age} ${h.coat} / ${h.style} / 調教<b class="train t${h.trainingGrade}">${h.trainingGrade}</b></div>
             <div>${esc(h.jockey.name)} ${h.kinryo.toFixed(1)}</div>
@@ -325,8 +361,9 @@
     }).join('');
     return `
       <section class="card">
-        <h2>馬柱 <small>${race.surface}${race.distance}m と同条件(同じ馬場で±200m)の走りは<span class="same">緑</span>/上がり3F の順位1〜3位は①②③/成績は 1着-2着-3着-着外/(タイム差)は勝ち馬との差・勝った時は2着馬との差</small></h2>
+        <h2>馬柱 <small>${race.surface}${race.distance}m と同条件(同じ馬場で±200m)の走りは<span class="same">緑</span>/走破=その馬のタイム・勝ち=勝ち馬のタイム/上がり3F の順位1〜3位は①②③/成績は 1着-2着-3着-着外/(タイム差)は勝ち馬との差・勝った時は2着馬との差</small></h2>
         ${viewTabs()}
+        ${tipsterBoard()}
         <div class="tablewrap">
           <table class="paper">
             <thead><tr><th>馬</th><th>前走</th><th>2走前</th><th>3走前</th><th>4走前</th><th>5走前</th></tr></thead>
@@ -547,30 +584,67 @@
   function renderRaceView() {
     const r = race;
     return `
-      <section class="card raceview">
-        <div class="tv">
-          <canvas id="tv"></canvas>
-          <div class="tv-top">
-            <div class="tv-title"><span class="tv-venue">${r.venue}${r.raceNo}R</span>${esc(r.name)}<span class="tv-cond">${r.surface}${r.distance}m ${r.going}</span></div>
-            <div class="tv-clock" id="rvTime">0.0</div>
+      <section class="card raceview ${save.side ? 'withside' : ''}" id="raceview">
+        <div class="rvmain">
+          <div class="tv">
+            <canvas id="tv"></canvas>
+            <div class="tv-top">
+              <div class="tv-title"><span class="tv-venue">${r.venue}${r.raceNo}R</span>${esc(r.name)}<span class="tv-cond">${r.surface}${r.distance}m ${r.going}</span></div>
+              <div class="tv-clock" id="rvTime">0.0</div>
+            </div>
+            <div class="tv-seg" id="tvSeg"></div>
+            <div class="tv-remain" id="rvRemain"></div>
+            <canvas id="oval" class="tv-map"></canvas>
+            <div class="tv-board" id="tvBoard" hidden></div>
+            <div class="tv-fanfare" id="tvFan" hidden>
+              <div class="fan-grade g${r.cls.grade ? r.cls.key.slice(1) : ''}">${r.cls.name}</div>
+              <div class="fan-name">${esc(r.name)}</div>
+              <div class="fan-cond">${r.venue} ${r.surface}${r.distance}m ${r.n}頭 / ${r.postTime} 発走</div>
+              <div class="fan-note">♪ ファンファーレ</div>
+            </div>
+            <div class="tv-sub" id="tvSub"></div>
+            <div class="tv-ticker" id="tvTicker"></div>
           </div>
-          <div class="tv-seg" id="tvSeg"></div>
-          <div class="tv-remain" id="rvRemain"></div>
-          <canvas id="oval" class="tv-map"></canvas>
-          <div class="tv-board" id="tvBoard" hidden></div>
-          <div class="tv-sub" id="tvSub"></div>
-          <div class="tv-ticker" id="tvTicker"></div>
+          <div class="rvtop">
+            <div class="speed">${[1, 2, 4, 8].map(s => `<button class="chip small ${save.speed === s ? 'on' : ''}" data-speed="${s}">×${s}</button>`).join('')}
+              <button class="chip small" data-act="skip">スキップ ⏭</button></div>
+            <div class="rvbtns">
+              <button class="chip small ${save.sound ? 'on' : ''}" data-act="sound" id="soundBtn">${save.sound ? '🔊 音あり' : '🔇 音なし'}</button>
+              <button class="chip small ${save.side ? 'on' : ''}" data-act="side" id="sideBtn">出馬表</button>
+              <span class="sub">カメラ: <span id="tvShot"></span></span>
+            </div>
+          </div>
+          <div class="rvbottom">
+            <ol id="rank" class="rank"></ol>
+            <ul id="comment" class="comment"></ul>
+          </div>
         </div>
-        <div class="rvtop">
-          <div class="speed">${[1, 2, 4, 8].map(s => `<button class="chip small ${save.speed === s ? 'on' : ''}" data-speed="${s}">×${s}</button>`).join('')}
-            <button class="chip small" data-act="skip">スキップ ⏭</button></div>
-          <div class="sub">カメラ: <span id="tvShot"></span></div>
-        </div>
-        <div class="rvbottom">
-          <ol id="rank" class="rank"></ol>
-          <ul id="comment" class="comment"></ul>
-        </div>
+        <aside class="rvside">${sideCardHtml()}</aside>
       </section>`;
+  }
+
+  // レース中に横で見る出馬表(印・オッズ・現在の順位・自分の馬券)
+  function sideCardHtml() {
+    const m = race.market, mine = myHorses();
+    const rows = race.horses.map((h, i) => `
+      <tr class="${mine.has(h.no) ? 'mine' : ''}">
+        <td>${waku(h.bracket, 'mini')}</td><td class="no">${h.no}</td>
+        <td class="tipsmini">${tipMarks(i).map((mk, k) => `<i class="m${markClass(mk)}" title="${TIPS[k].name}">${mk || '・'}</i>`).join('')}</td>
+        <td class="hn"><div class="name">${esc(h.name)}</div><div class="sub jk">${esc(h.jockey.name)} ${h.style}</div></td>
+        <td class="odds ${m.pop[i] <= 3 ? 'hot' : ''}">${odds1(m.winPay[i])}<div class="sub">${m.pop[i]}人気</div></td>
+        <td class="now" id="sc-now-${h.no}">—</td>
+      </tr>`).join('');
+    const tickets = save.sel ? curState().tickets : [];
+    const tk = tickets.length
+      ? tickets.map(t => `<li>${E.BET[t.type].label}${t.method !== 'normal' ? ' ' + METHOD_LABEL[t.method] : ''} <b>${esc(selText(t.type, t.method, t.sel))}</b> <span class="sub">${t.combos.length}点 ${yen(t.cost)}</span></li>`).join('')
+      : '<li class="sub">馬券なし(見送り)</li>';
+    return `
+      <div class="side-h">出馬表 <span class="sub">印:${TIPS.map(t => t.short[0]).join('')}=${TIPS.map(t => t.short).join('・')}</span></div>
+      <div class="side-scroll"><table class="sidecard">
+        <thead><tr><th>枠</th><th>番</th><th>印</th><th>馬名/騎手</th><th>単勝</th><th>位置</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <div class="side-h">購入した馬券</div>
+      <ul class="side-tickets">${tk}</ul>`;
   }
 
   function skipNoteHtml() {
@@ -646,6 +720,7 @@
     });
     save.history = save.history.slice(0, 200);
     Object.assign(st, { done: true, winnerNo: result.order[0], winner: race.horses[result.order[0] - 1].name });
+    recordTipsters();
     persist();
     startAnim(back);
   }
@@ -678,7 +753,18 @@
       case 'add': addToCart(); break;
       case 'buy': buy(); break;
       case 'post': post(); break;
-      case 'skip': if (anim) { anim.skipped = true; anim.T = anim.endT; step(performance.now()); } break;
+      case 'skip': if (anim) { anim.skipped = true; anim.T = anim.endT; KeibaSound.stop(); step(performance.now()); } break;
+      case 'sound':
+        save.sound = !save.sound; persist(); KeibaSound.setEnabled(save.sound);
+        el.classList.toggle('on', save.sound); el.textContent = save.sound ? '🔊 音あり' : '🔇 音なし';
+        break;
+      case 'side': {
+        save.side = !save.side; persist();
+        el.classList.toggle('on', save.side);
+        const rv = $('#raceview');
+        if (rv) { rv.classList.toggle('withside', save.side); if (tv) { tv.resize(); setupOval(); } }
+        break;
+      }
       case 'replay': startAnim(); break;
       case 'next': selectRace(nextKey()); break;
       case 'nextday': newMeet(save.meet.day + 1); selectRace(nextKey()); break;
@@ -702,23 +788,52 @@
 
   // ---------- レース再生 ----------
   const PRE_ROLL = 3; // ゲートイン完了から発走までの秒数
-  const SHOT_LABEL = { gate: 'ゲート', side: 'サイド', corner: 'コーナー', high: '俯瞰', front: '直線正面', goal: 'ゴール前' };
+  const SHOT_LABEL = { stands: 'スタンド', gate: 'ゲート', side: 'サイド', corner: 'コーナー', high: '俯瞰', stretch: '直線(スタンド上から)', goal: 'ゴール前' };
+
+  // 先頭が距離 d を通過した時刻(フレーム間は線形補間)
+  function passTime(d) {
+    const f = result.frames, dt = result.dt;
+    for (let i = 1; i < f.length; i++) {
+      const a = Math.max(...f[i - 1]), b = Math.max(...f[i]);
+      if (b >= d) return (i - 1 + (d - a) / Math.max(1e-6, b - a)) * dt;
+    }
+    return null;
+  }
 
   function startAnim(hiddenReturn = 0) {
     const endT = (result.frames.length - 1) * result.dt;
     if (anim) clearInterval(anim.timer);
-    anim = { T: -PRE_ROLL, endT, last: performance.now(), said: new Set(), lastRank: 0, done: false, hiddenReturn, skipped: false, boardAt: null };
+    KeibaSound.stop();
+    KeibaSound.setEnabled(save.sound);
+    // 重賞は発走前にファンファーレ(G1 は長い版)
+    const graded = !!race.cls.grade;
+    const fanLen = graded ? KeibaSound.fanfareLength(race.cls.key) + 2.8 : 0;
+    const T0 = -PRE_ROLL - fanLen;
+    anim = {
+      T: T0, endT, last: performance.now(), said: new Set(), mentioned: new Set(), hist: [], lastRank: 0, done: false, hiddenReturn, skipped: false, boardAt: null,
+      prelude: graded ? -PRE_ROLL : null, preludeStart: T0, cheered: false,
+    };
     // requestAnimationFrame が止まる環境(非表示タブなど)でも進むよう、タイマーで補助する
     anim.timer = setInterval(() => { if (anim && performance.now() - anim.last > 150) step(performance.now()); }, 100);
     render();
-    say('各馬ゲートイン完了。');
+    if (graded) {
+      $('#tvFan').hidden = false;
+      say(`${race.venue}競馬場、本日のメインレース。${race.cls.name}、${race.name}。${race.surface}${race.distance}m、${race.n}頭立て。間もなくファンファーレです。`);
+      KeibaSound.fanfare(race.cls.key);
+    } else {
+      say('各馬順調にゲートイン。態勢完了。');
+      KeibaSound.crowd(0.06);
+    }
     requestAnimationFrame(tick);
   }
 
   let tv = null, ctxO, geo;
   function setupCanvases() {
-    tv = KeibaTV.createTV($('#tv'), race, { mine: myHorses() });
+    tv = KeibaTV.createTV($('#tv'), race, { mine: myHorses(), prelude: anim && anim.prelude, preludeStart: anim && anim.preludeStart });
     tv.resize();
+    setupOval();
+  }
+  function setupOval() {
     const dpr = window.devicePixelRatio || 1;
     const o = $('#oval');
     const w = o.clientWidth, h = Math.round(w * 0.55);
@@ -799,28 +914,116 @@
     ul.prepend(li);
   }
 
+  // ---------- 実況 ----------
+  // 実際の競馬中継の型(先行争い → 隊列 → 1000m 通過とペース → 3〜4 角の動き → 直線の攻防 → ゴール)に沿って話す
+  const LEN = 2.4; // 1 馬身(m)
+  function lenText(m) {
+    const L = m / LEN;
+    if (L < 0.3) return 'クビ差';
+    if (L < 0.7) return '半馬身';
+    if (L < 1.3) return '1馬身';
+    if (L < 1.8) return '1馬身半';
+    return `${Math.round(L)}馬身`;
+  }
   function commentary(pos) {
-    const D = race.distance, s = anim.said;
+    const D = race.distance, a = anim, T = a.T;
     const order = race.horses.map((h, j) => j).sort((x, y) => pos[y] - pos[x]);
-    const nm = j => `${race.horses[j].no}番 ${race.horses[j].name}`;
-    const lead = pos[order[0]];
-    const once = (key, text) => { if (!s.has(key)) { s.add(key); say(text); } };
-    if (anim.T > 0.6) {
-      const late = result.rows.filter(r => r.notes.includes('出遅れ')).map(r => `${r.no}番`);
-      once('start', `スタートしました!${late.length ? ` ${late.join('、')}が出遅れ。` : ' 揃ったスタート。'}`);
+    const H = j => race.horses[j];
+    // 初めて呼ぶ馬は馬番つき
+    const nm = j => { const h = H(j); if (a.mentioned.has(h.no)) return h.name; a.mentioned.add(h.no); return `${h.no}番${h.name}`; };
+    const once = (key, fn) => { if (!a.said.has(key)) { a.said.add(key); const t = fn(); if (t) say(t); } };
+    const lead = pos[order[0]], rem = D - lead;
+    const gap = (x, y) => pos[order[x]] - pos[order[y]];
+    // 順位の履歴(1 秒ごと)から、直近で順位を上げている馬を探す
+    if (T > 0 && (!a.hist.length || T - a.hist[a.hist.length - 1].T >= 1)) {
+      const rank = []; order.forEach((j, k) => { rank[j] = k; });
+      a.hist.push({ T, rank });
     }
-    if (lead > Math.min(400, D * 0.25)) once('early', `先手を取ったのは${nm(order[0])}、2番手に${nm(order[1])}。`);
-    const seg = tv && anim.T > 6 ? tv.segment : ''; // 発走直後は位置の実況をしない
-    if (seg === 'back') once('seg:back', `向正面。先頭${nm(order[0])}、後方に${race.horses[order[order.length - 1]].no}番。`);
-    if (seg === 'c3') once('seg:c3', `3コーナーカーブ。先頭は${nm(order[0])}、${race.horses[order[1]].no}番が続く。`);
-    if (seg === 'c4') once('seg:c4', `4コーナーを回って、直線コースへ!`);
-    if (lead > D / 2) once('half', `${D / 2}m 通過。先頭${nm(order[0])}。`);
-    if (lead > D - 600) once('600', `残り600m!各馬スパート。先頭${nm(order[0])}、${race.horses[order[1]].no}番、${race.horses[order[2]].no}番。`);
-    if (lead > D - 200) once('200', `残り200m!${nm(order[0])}先頭、${nm(order[1])}が迫る!`);
-    if (lead >= D) {
-      const w = race.horses[result.order[0] - 1];
-      once('goal', `${w.no}番 ${w.name}、1着でゴールイン!`);
+    const mover = (secs, within) => {
+      const past = a.hist.find(x => x.T >= T - secs);
+      if (!past || T - past.T < secs * 0.6) return null;
+      let best = null, bestGain = 2;
+      order.slice(1, within).forEach((j, k) => { const g = past.rank[j] - (k + 1); if (g > bestGain) { best = j; bestGain = g; } });
+      return best;
+    };
+
+    if (a.prelude != null && T >= a.prelude) once('gatein', () => { $('#tvFan').hidden = true; return '各馬ゲートイン完了。態勢整いました。'; });
+    if (T > 0.5) once('start', () => {
+      KeibaSound.crowd(0.12);
+      const late = result.rows.filter(r => r.notes.includes('出遅れ')).map(r => nm(r.no - 1));
+      return late.length ? `スタートしました!あっと、${late.join('、')}は出遅れました!` : 'スタートしました!各馬そろった綺麗なスタートです。';
+    });
+    if (T > 5 && lead > 90) once('lead', () => {
+      if (gap(0, 1) < 1.2) {
+        const [inn, out] = [order[0], order[1]].sort((x, y) => tv.lanes[x] - tv.lanes[y]);
+        return `さあ先行争い。内から${nm(inn)}、外から${nm(out)}、2頭が並んでハナを争います。`;
+      }
+      return `ハナを切ったのは${nm(order[0])}。${lenText(gap(0, 1))}ほど離れて${nm(order[1])}が2番手。`;
+    });
+    // 隊列(先頭グループ → 中団 → 後方 → 1番人気の位置)
+    const formAt = Math.max(D * 0.32, 420);
+    if (T > 12 && lead > formAt && rem > 600) {
+      once('form1', () => `隊列を確認しましょう。先頭は${nm(order[0])}、${lenText(gap(0, 1))}離れて${nm(order[1])}、その後ろに${nm(order[2])}。`);
+      if (lead > formAt + 70) once('form2', () => {
+        const mid = Math.floor(race.n / 2);
+        return `中団に${nm(order[mid - 1])}、${nm(order[mid])}。後方から${nm(order[race.n - 2])}、最後方に${nm(order[race.n - 1])}。`;
+      });
+      if (lead > formAt + 140) once('fav', () => {
+        const fav = race.market.pop.indexOf(1), k = order.indexOf(fav) + 1;
+        const where = k === 1 ? '先頭' : k <= 3 ? `${k}番手の好位` : k <= race.n * 0.6 ? `${k}番手、中団で脚をためる形` : `${k}番手、後方からの競馬`;
+        return `1番人気の${nm(fav)}は${where}。`;
+      });
     }
+    // 1000m(短距離は 600m)通過タイムとペース
+    const mark = D >= 1400 ? 1000 : 600;
+    if (lead >= mark && rem > 200) once('split', () => {
+      const t = passTime(mark), ref = result.rows[0].time * mark / D;
+      const r = t / ref;
+      // シミュレーターの分布(中央値 1.014・上下 1 割で ±0.009)に合わせ、速い方・遅い方の約 2 割をハイ/スローと呼ぶ
+      const pace = r < 1.007 ? 'ハイペース' : r > 1.021 ? 'スローペース' : '平均ペース';
+      const tail = pace === 'ハイペース' ? '。先行勢には厳しい流れ、差し馬の出番があるか' : pace === 'スローペース' ? '。ゆったりとした流れ、前の馬に有利な展開' : '。淀みのない流れです';
+      return `${mark}m通過は${(t).toFixed(1).replace('.', '秒')}、${pace}${tail}。`;
+    });
+    const seg = tv && T > 6 ? tv.segment : '';
+    if (seg === 'c3' && rem > 380) once('c3', () => {
+      const m = mover(8, race.n);
+      if (m != null) return `3コーナー、外から${nm(m)}が早めに進出!先頭との差を詰めていきます。`;
+      return `3コーナーカーブ、依然として先頭は${nm(order[0])}、リードは${lenText(gap(0, 1))}。`;
+    });
+    if (seg === 'c4' && rem > 300) once('c4', () => `4コーナーを回って直線コースへ!${nm(order[0])}先頭、${nm(order[1])}が${gap(0, 1) < 1.5 ? '並びかける' : '追いかける'}、${nm(order[2])}も差を詰めてくる!`);
+    if (seg === 'straight' && rem < race.course.straight - 60 && rem > 330) once('str', () => {
+      const m = mover(6, 8);
+      const head = gap(0, 1) > 3 ? `${nm(order[0])}、リードを広げる!` : `${nm(order[0])}、先頭で粘る!`;
+      return m != null && m !== order[0] ? `${head}外から${nm(m)}が飛んでくる!` : `${head}${nm(order[1])}も懸命に追う!`;
+    });
+    if (rem <= 400 && rem > 220) once('400', () => {
+      KeibaSound.crowd(0.35);
+      if (gap(0, 2) < LEN) return `残り400!${nm(order[0])}、${nm(order[1])}、${nm(order[2])}、横一線の追い比べ!`;
+      return `残り400を切った!鞭が入る!${nm(order[0])}先頭、追う${nm(order[1])}!`;
+    });
+    if (rem <= 200 && rem > 80) once('200', () => {
+      KeibaSound.crowd(0.55);
+      if (gap(0, 1) < LEN * 0.5) return `残り200!${nm(order[0])}と${nm(order[1])}、激しい叩き合い!`;
+      if (gap(0, 1) > LEN * 3) return `残り200!${nm(order[0])}、後続を突き放す!これは強い!`;
+      const m = mover(5, 6);
+      return `残り200!${nm(order[0])}先頭、${nm(order[1])}が迫る!${m != null && m !== order[1] && m !== order[0] ? `さらに${nm(m)}!` : ''}`;
+    });
+    if (rem <= 80 && rem > 0 && gap(0, 1) < LEN * 0.6) once('100', () => `${H(order[0]).name}か!${H(order[1]).name}か!`);
+    if (lead >= D) once('goal', () => {
+      if (!a.cheered) { a.cheered = true; KeibaSound.cheer(); KeibaSound.crowd(0.15); }
+      const r0 = result.rows[0], r1 = result.rows[1];
+      if (['同着', 'ハナ', 'アタマ'].includes(r1.margin)) return 'ほとんど並んでゴールイン!これは写真判定です!';
+      const w = r0.no - 1;
+      const big = r1.margin === '大差' ? '大差の圧勝!' : parseFloat(r1.margin) >= 3 ? `${r1.margin.replace('.', ' ')}馬身差の圧勝!` : '';
+      return `${nm(w)}、1着でゴールイン!${big}`;
+    });
+    // 着順掲示が出たら確定の実況
+    if (a.boardAt !== null && T - a.boardAt > 0.8) once('final', () => {
+      const r = result.rows, w = race.horses[r[0].no - 1], pop = race.market.pop[r[0].no - 1];
+      const praise = pop === 1 ? '1番人気に応えました!' : pop >= 7 ? `${pop}番人気の伏兵が大金星!` : '';
+      const title = race.cls.grade ? `${race.cls.name}制覇!` : '見事な騎乗でした。';
+      return `1着は${w.no}番${w.name}、2着${r[1].no}番、3着${r[2].no}番。勝ちタイム${E.formatTime(r[0].time)}。${praise}鞍上${w.jockey.name}、${title}`;
+    });
   }
 
   function currentOrder(pos) {
@@ -841,9 +1044,10 @@
     const lead = pos[order[0]], mine = myHorses();
     $('#rank').innerHTML = order.map((j, k) => {
       const h = race.horses[j];
-      const gap = finished.has(h.no) ? '' : k === 0 ? '' : `${((Math.min(lead, D) - pos[j]) / 2.4).toFixed(1)}馬身`;
+      const gap = finished.has(h.no) || k === 0 || anim.T <= 0 ? '' : `${((Math.min(lead, D) - pos[j]) / 2.4).toFixed(1)}馬身`;
       return `<li class="${mine.has(h.no) ? 'mine' : ''}">${waku(h.bracket, 'mini')}<b>${h.no}</b> ${esc(h.name)} <span class="sub">${gap}</span></li>`;
     }).join('');
+    order.forEach((j, k) => { const c = document.getElementById(`sc-now-${race.horses[j].no}`); if (c) c.textContent = anim.T > 0 ? `${k + 1}位` : '—'; });
     $('#tvTicker').innerHTML = '<span class="lbl">順位</span>' + order.map(j => {
       const h = race.horses[j];
       const [bg, fg] = BRACKET_COLORS[h.bracket];
@@ -889,16 +1093,16 @@
       anim.done = true;
       clearInterval(anim.timer);
       const finished = anim;
-      setTimeout(() => { if (anim === finished) { anim = null; render(); } }, finished.skipped ? 700 : 2600);
+      setTimeout(() => { if (anim === finished) { anim = null; KeibaSound.crowd(0); render(); } }, finished.skipped ? 700 : 4200);
     }
   }
 
-  window.addEventListener('resize', () => { if (anim && tv) { tv.resize(); setupCanvases(); } });
+  window.addEventListener('resize', () => { if (anim && tv) { tv.resize(); setupOval(); } });
 
   // テストからの操作用
   window.__keiba = {
     get race() { return race; }, get result() { return result; }, get save() { return save; }, get anim() { return anim; }, get tv() { return tv; }, ui,
-    get cur() { return curState(); }, schedule, nextKey, targetKey, rstate,
+    get cur() { return curState(); }, schedule, nextKey, targetKey, rstate, header,
   };
 
   init();

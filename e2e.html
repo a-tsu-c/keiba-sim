@@ -47,8 +47,13 @@
     const h1 = K().race.horses[0], r1 = h1.past[0];
     const cell = paperRows[0].querySelector('td.run').textContent;
     log(cell.includes(r1.dateLabel) && cell.includes(r1.venue) && cell.includes(String(r1.dist)) && cell.includes(r1.rival), '前走セルに日付・場・距離・相手馬: ' + cell.replace(/\s+/g, ' ').trim());
+    const fmt = w.KeibaEngine.formatTime;
+    log(cell.includes('走破' + fmt(r1.time)) && cell.includes('勝ち ' + fmt(r1.time - Math.max(0, r1.diff))), '前走セルに走破タイムと勝ちタイム');
+    log(w.document.querySelectorAll('table.paper .tips').length === K().race.n && w.document.querySelectorAll('table.paper .tips')[0].querySelectorAll('.tip').length === 5, '馬柱に予想家5人の印');
+    log(w.document.querySelectorAll('.tipboard .tipster').length === 5, '予想家の一覧(5人)');
     click(w, '[data-view="simple"]');
     log(w.document.querySelectorAll('table.entries tbody tr').length === K().race.n, '出馬表表示に切替(行数 = 頭数)');
+    log(w.document.querySelectorAll('table.entries th.tip').length === 5, '出馬表に予想家5人の印の列');
     click(w, '[data-view="paper"]');
     log(!!w.document.querySelector('table.paper'), '馬柱表示に戻せる');
 
@@ -116,6 +121,17 @@
     log(!!w.document.getElementById('tv'), '中継映像キャンバスあり');
     log(w.document.querySelectorAll('#tvTicker .tk').length === K().race.n, '順位ティッカーに全頭');
     log(w.document.getElementById('tvShot').textContent.length > 0, 'カメラ表示: ' + w.document.getElementById('tvShot').textContent);
+    // レース中の出馬表(横)
+    log(w.document.querySelectorAll('.rvside table.sidecard tbody tr').length === K().race.n, 'レース中の出馬表に全頭');
+    log(w.document.querySelectorAll('.rvside .side-tickets li').length === 3, 'レース中の出馬表に購入馬券3件');
+    log(/位$/.test(text(w, `#sc-now-${K().race.horses[0].no}`)), 'レース中の出馬表に現在の順位: ' + text(w, `#sc-now-${K().race.horses[0].no}`));
+    click(w, '#sideBtn');
+    log(!w.document.getElementById('raceview').classList.contains('withside') && !K().save.side, '出馬表を閉じられる');
+    click(w, '#sideBtn');
+    log(w.document.getElementById('raceview').classList.contains('withside'), '出馬表を開き直せる');
+    click(w, '#soundBtn');
+    log(K().save.sound === false && text(w, '#soundBtn').includes('音なし'), '音のオン・オフ');
+    click(w, '#soundBtn');
     click(w, '[data-act="skip"]');
     await sleep(100);
     log(!w.document.getElementById('tvBoard').hidden && w.document.querySelector('#kakutei.on'), '着順掲示板に「確定」');
@@ -189,6 +205,22 @@
     click(w, `.pc[data-race="${sch.races[2].key}"]`);
     log(!!w.document.querySelector('.result') && text(w, '.mytickets').includes('自動スキップ'), '自動スキップしたレースの結果を表示できる');
     log(K().rstate(sch.races[2].key).winnerNo === K().result.order[0], 'スキップ時の勝ち馬 = 表示した結果の勝ち馬(軽量計算と一致)');
+
+    // 重賞はファンファーレ(スタンド撮り)から始まる
+    const gi = K().schedule().races.find(r => !K().rstate(r.key).done && K().header(r).cls.grade);
+    if (gi) {
+      click(w, `.pc[data-race="${gi.key}"]`);
+      buyWin(1);
+      click(w, '[data-act="post"]');
+      await sleep(400);
+      log(K().anim && K().anim.T < -3 && !w.document.getElementById('tvFan').hidden, 'ファンファーレの表示: ' + text(w, '#tvFan').replace(/\s+/g, ' ').trim());
+      log(K().tv.shot === 'stands', 'ファンファーレ中はスタンドを映す');
+      log(text(w, '#comment').includes('ファンファーレ'), '実況がレースを紹介');
+      click(w, '[data-act="skip"]');
+      await sleep(900);
+      const tp = K().save.tipsters;
+      log(Object.keys(tp).length === 5 && Object.values(tp).every(r => r.n >= 1), '予想家の成績を記録');
+    } else log(false, '重賞レースが見つからない');
 
     // 全レース確定 → 翌開催日
     sch.races.forEach(r => Object.assign(K().rstate(r.key), { done: true, winnerNo: 1, winner: '-' }));

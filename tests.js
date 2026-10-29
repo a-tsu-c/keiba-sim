@@ -163,6 +163,32 @@
     ok(histN / total < 0.25, `レース内のもじり名の割合 ${(histN / total).toFixed(2)}`);
   });
 
+  test('予想家の印(各自 ◎○▲△△☆・見立ての違い)', () => {
+    eq(E.TIPSTERS.length, 5);
+    const expWin = {}, favHonmei = {};
+    E.TIPSTERS.forEach(t => { expWin[t.id] = 0; favHonmei[t.id] = 0; });
+    let differ = 0;
+    for (let s = 400; s < 440; s++) {
+      const r = E.generateRace({ seed: s, raceNo: 1 + (s % 12), venueIdx: s % 6 });
+      const tips = r.market.tips;
+      eq(tips.length, 5);
+      for (const [k, t] of tips.entries()) {
+        const cnt = m => t.marks.filter(x => x === m).length;
+        eq([cnt('◎'), cnt('○'), cnt('▲'), cnt('△')], [1, 1, 1, 2], '印の数 ' + E.TIPSTERS[k].name);
+        ok(cnt('☆') <= 1, '☆は1頭まで');
+        const star = t.marks.indexOf('☆');
+        if (star >= 0) ok(r.market.pop[star] >= 6, '☆は6番人気以下');
+        const h = t.marks.indexOf('◎');
+        expWin[t.id] += r.probs.win[h];
+        if (r.market.pop[h] === 1) favHonmei[t.id]++;
+      }
+      if (new Set(tips.map(t => t.marks.indexOf('◎'))).size > 1) differ++;
+    }
+    ok(differ >= 20, `予想家で◎が分かれる ${differ}/40`);
+    ok(expWin.kazumi > expWin.anai, `データ派の◎は穴党より勝ちやすい ${expWin.kazumi.toFixed(2)} > ${expWin.anai.toFixed(2)}`);
+    ok(favHonmei.katata > favHonmei.anai, `本命党は1番人気に◎を打ちやすい ${favHonmei.katata} > ${favHonmei.anai}`);
+  });
+
   // --- 馬券の展開 ---
   test('ボックス・ながし・フォーメーションの点数', () => {
     const r = raceWithN(16);
@@ -301,12 +327,14 @@
       if (checked.has(race.venue)) continue;
       checked.add(race.venue);
       const res = E.runRace(race);
-      const tv = KeibaTV.createTV(cv, race, {});
+      // 1 場目は重賞のファンファーレ(スタンド撮り)から始める
+      const fan = checked.size === 1;
+      const tv = KeibaTV.createTV(cv, race, fan ? { prelude: -3, preludeStart: -12 } : {});
       tv.resize();
       const shots = [];
       const endT = (res.frames.length - 1) * res.dt;
-      let offscreen = 0, frames = 0, overlaps = 0, pairs = 0;
-      for (let T = -3; T <= endT; T += 0.1) {
+      let offscreen = 0, frames = 0, overlaps = 0, pairs = 0, stretchFrames = 0, stretchMiss = 0;
+      for (let T = fan ? -12 : -3; T <= endT; T += 0.1) {
         const t = Math.max(0, T), i = Math.min(res.frames.length - 2, Math.floor(t / res.dt)), fr = Math.min(1, t / res.dt - i);
         const pos = race.horses.map((_, j) => res.frames[i][j] + (res.frames[i + 1][j] - res.frames[i][j]) * fr);
         tv.render(T, pos, 0);
@@ -317,9 +345,15 @@
           const p = tv.screenOf(pos[lead] - 1, 1.3, tv.lanes[lead]);
           if (!p || p.x < 0 || p.x > tv.size.W) offscreen++;
         }
-        if (tv.shot === 'front') {
-          const p = tv.screenOf(pos[lead] - 1, 1.3, tv.lanes[lead]);
-          ok(p && p.x > 0 && p.x < tv.size.W && p.y > 0 && p.y < tv.size.H, `正面映像で先頭馬が画面内 ${race.venue}`);
+        if (tv.shot === 'stretch') {
+          // 斜め上からの直線映像:上位 5 頭が画面内に収まり、順位が見て分かる
+          const top = race.horses.map((_, j) => j).sort((a, b) => pos[b] - pos[a]).slice(0, 5);
+          for (const j of top) {
+            stretchFrames++;
+            const p = tv.screenOf(pos[j] - 1, 1.3, tv.lanes[j]);
+            if (!p || p.x < 0 || p.x > tv.size.W || p.y < 0 || p.y > tv.size.H) stretchMiss++;
+          }
+          ok(tv.camera.y >= 20 && tv.camera.pitch > 0.2, `直線は高い位置から見下ろす ${race.venue}`);
         }
         ok(tv.lanes.every(l => l >= 0 && l <= KeibaTV.TRACK_W), '横位置がコース内');
         // すり抜け(体が重なる)がないか:前後 3m 以内で横 0.9m 未満に並ぶ組
@@ -328,9 +362,11 @@
         }
       }
       const label = `${race.venue}${race.surface}${race.distance}: ${shots.join('→')}`;
-      eq(shots[0], 'gate', 'ゲートから始まる ' + label);
+      if (fan) eq(shots.slice(0, 2), ['stands', 'gate'], 'ファンファーレ(スタンド)→ ゲート ' + label);
+      else eq(shots[0], 'gate', 'ゲートから始まる ' + label);
       ok(shots.includes('corner'), 'コーナーのカットあり ' + label);
-      ok(shots.indexOf('front') > 0 && shots.indexOf('front') < shots.lastIndexOf('goal'), '直線正面 → ゴール前 ' + label);
+      ok(shots.indexOf('stretch') > 0 && shots.indexOf('stretch') < shots.lastIndexOf('goal'), '直線(斜め上)→ ゴール前 ' + label);
+      ok(stretchMiss / Math.max(1, stretchFrames) < 0.02, `直線映像で上位5頭が画面外 ${stretchMiss}/${stretchFrames} ${label}`);
       eq(shots[shots.length - 1], 'goal', 'ゴール前で終わる ' + label);
       ok(offscreen / frames < 0.01, `先頭馬が画面外 ${offscreen}/${frames} ${label}`);
       ok(overlaps === 0, `馬同士の重なり ${overlaps}/${pairs} ${label}`);

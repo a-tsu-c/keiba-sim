@@ -210,6 +210,65 @@
   .comment li { padding: 3px 0; border-bottom: 1px dashed var(--line); }
   .comment li:first-child { font-weight: 700; }
 
+  /* 予想家の印 */
+  .tips { display: flex; gap: 2px; margin: 3px 0; }
+  .tip { font-weight: 800; text-align: center; }
+  .tips .tip { display: inline-flex; flex-direction: column; align-items: center; min-width: 22px; border: 1px solid var(--line); border-radius: 4px; line-height: 1.1; padding: 1px 0; font-size: 13px; }
+  .tips .tip small { font-size: 9px; color: var(--muted); font-weight: 600; }
+  .entries th.tip { text-align: center; padding: 4px 2px; }
+  .entries td.tip { padding: 5px 2px; width: 20px; }
+  .tip.m1, .tipsmini .m1 { color: var(--hot); } .tip.m2, .tipsmini .m2 { color: #1e6fd9; } .tip.m3, .tipsmini .m3 { color: #138a4a; }
+  .tip.m4, .tipsmini .m4 { color: var(--fg); } .tip.m5, .tipsmini .m5 { color: #c27c00; } .tip.m0, .tipsmini .m0 { color: var(--line); font-weight: 400; }
+  .tipboard { margin: 6px 0 8px; font-size: 13px; }
+  .tipboard summary { cursor: pointer; font-weight: 700; }
+  .tipboard summary .sub { font-weight: 400; margin-left: 6px; }
+  .tiplist { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin-top: 6px; }
+  .tipster { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+  .tipster .tstat { flex-basis: 100%; font-size: 12px; }
+  .run .rt { display: flex; gap: 4px; align-items: baseline; }
+  .run .rt b { font-variant-numeric: tabular-nums; }
+  .run .rt .sub:last-child { margin-left: auto; }
+
+  /* レース中の出馬表(横) */
+  .raceview { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .raceview .rvside { display: none; min-width: 0; }
+  .raceview.withside { grid-template-columns: minmax(0, 1fr) 330px; }
+  .raceview.withside .rvside { display: block; border-left: 1px solid var(--line); padding-left: 12px; }
+  .rvbtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .side-h { font-weight: 800; margin: 2px 0 6px; } .side-h .sub { font-weight: 400; font-size: 11px; margin-left: 4px; }
+  .side-scroll { max-height: 520px; overflow: auto; }
+  .sidecard { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .sidecard th { color: var(--muted); font-weight: 600; text-align: left; padding: 2px 3px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+  .sidecard td { padding: 3px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .sidecard .no { font-weight: 800; }
+  .sidecard .name, .sidecard .jk { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+  .sidecard .name { font-weight: 700; } .sidecard .jk { font-size: 11px; }
+  .rvside .side-h + .side-tickets, .rvside .side-scroll + .side-h { margin-top: 10px; }
+  .withside .rank li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sidecard .odds { font-weight: 700; text-align: right; white-space: nowrap; } .sidecard .odds.hot { color: var(--hot); }
+  .sidecard .now { font-weight: 800; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+  .sidecard tr.mine td { background: var(--mine); }
+  .tipsmini { white-space: nowrap; } .tipsmini i { font-style: normal; font-weight: 800; font-size: 11px; }
+  .side-tickets { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .side-tickets li { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  @media (max-width: 1100px) {
+    .raceview.withside { grid-template-columns: minmax(0, 1fr); }
+    .raceview.withside .rvside { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 8px; }
+    .side-scroll { max-height: 340px; }
+    .sidecard .name, .sidecard .jk { max-width: none; }
+  }
+
+  /* 重賞のファンファーレ */
+  .tv-fanfare { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -55%); text-align: center; color: #fff; background: rgba(8,18,38,.78); border: 2px solid #ffd54a; padding: 12px 26px; border-radius: 6px; animation: fanin .8s ease-out; max-width: 86%; }
+  .tv-fanfare .fan-grade { display: inline-block; font-weight: 900; font-size: clamp(14px, 2.4vw, 24px); padding: 0 12px; border-radius: 4px; background: #1a8a3d; }
+  .tv-fanfare .fan-grade.g1 { background: #1f4fbf; } .tv-fanfare .fan-grade.g2 { background: #c8202f; }
+  .tv-fanfare .fan-name { font-weight: 900; font-size: clamp(18px, 3.6vw, 38px); margin: 4px 0; letter-spacing: .04em; }
+  .tv-fanfare .fan-cond { font-size: clamp(11px, 1.5vw, 15px); opacity: .9; }
+  .tv-fanfare .fan-note { color: #ffd54a; font-weight: 700; margin-top: 4px; animation: pulse 1s infinite alternate; }
+  @keyframes fanin { from { opacity: 0; transform: translate(-50%, -45%); } }
+  @keyframes pulse { to { opacity: .45; } }
+  @media (prefers-reduced-motion: reduce) { .tv-fanfare, .tv-fanfare .fan-note { animation: none; } }
+
   .laps { margin-bottom: 8px; }
   .pace { margin-left: 10px; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--chip); }
   .pace.pH { color: var(--hot); }
@@ -231,6 +290,7 @@
 <div id="app"></div>
 <script src="engine.js"></script>
 <script src="tv.js"></script>
+<script src="sound.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

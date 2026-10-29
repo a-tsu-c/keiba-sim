@@ -663,11 +663,45 @@
     const placeShare = ps.map(x => x / psSum);
     const pop = Array(race.n);
     q.map((x, i) => [x, i]).sort((a, b) => b[0] - a[0]).forEach(([, i], k) => { pop[i] = k + 1; });
-    // 新聞の印(大衆の見立て + 記者の主観)
-    const marks = Array(race.n).fill('');
-    const press = q.map((x, i) => [x * Math.exp(gauss(rng) * 0.35), i]).sort((a, b) => b[0] - a[0]);
-    ['◎', '○', '▲', '△', '△', '☆'].forEach((m, k) => { if (press[k]) marks[press[k][1]] = m; });
-    return { q, pl, winPay, placeShare, pop, marks };
+    const tips = tipsterMarks(race, q, pop);
+    return { q, pl, winPay, placeShare, pop, tips };
+  }
+
+  // ---------- 予想家の印 ----------
+  // 予想家ごとに見るところが違う(人気・妙味・能力指数・調教・適性)。乱数列は市場と分ける
+  const TIPSTERS = [
+    { id: 'katata', name: '堅田 守', short: '堅田', style: '本命党', desc: '人気どころを素直に評価する本紙の顔' },
+    { id: 'anai', name: '穴井 一発', short: '穴井', style: '穴党', desc: '人気薄の妙味を狙う万馬券ハンター' },
+    { id: 'kazumi', name: '数見 理', short: '数見', style: 'データ派', desc: '独自の能力指数で淡々と序列をつける' },
+    { id: 'hanro', name: '坂路 走', short: '坂路', style: '調教派', desc: '追い切りの動きを最重視するトラックマン' },
+    { id: 'doi', name: '土井 芝夫', short: '土井', style: '適性派', desc: 'コース・距離・馬場の実績にこだわる' },
+  ];
+  const MARK_ORDER = ['◎', '○', '▲', '△', '△'];
+  function fitRate(r) { const runs = r.reduce((a, b) => a + b, 0); return (r[0] + (r[1] + r[2]) * 0.5 + 0.4) / (runs + 2); }
+  function tipsterMarks(race, q, pop) {
+    const rng = rngFor(race.seed, 'tips');
+    const p = race.probs.win, heavy = race.going === '重' || race.going === '不良';
+    const TRAIN = { A: 2.2, B: 1.4, C: 1.0, D: 0.6 };
+    const score = {
+      katata: i => q[i] * Math.exp(gauss(rng) * 0.25),
+      anai: i => Math.pow(p[i], 0.9) / Math.pow(q[i], 0.55) * Math.exp(gauss(rng) * 0.35),
+      kazumi: i => p[i] * Math.exp(gauss(rng) * 0.2),
+      hanro: i => Math.pow(p[i], 0.6) * TRAIN[race.horses[i].trainingGrade] * Math.exp(gauss(rng) * 0.35),
+      doi: i => {
+        const r = race.horses[i].records;
+        const surf = race.surface === '芝' ? r.turf : r.dirt;
+        return Math.pow(p[i], 0.6) * (0.5 + fitRate(surf)) * (0.5 + fitRate(r.dist)) * (heavy ? 0.5 + fitRate(r.heavy) : 1) * Math.exp(gauss(rng) * 0.3);
+      },
+    };
+    return TIPSTERS.map(t => {
+      const ranked = race.horses.map((h, i) => [score[t.id](i), i]).sort((a, b) => b[0] - a[0]).map(x => x[1]);
+      const marks = Array(race.n).fill('');
+      MARK_ORDER.forEach((m, k) => { if (ranked[k] != null) marks[ranked[k]] = m; });
+      // ☆は 6 番人気以下で最上位の馬(穴の一頭)
+      const star = ranked.find(i => !marks[i] && pop[i] >= 6);
+      if (star != null) marks[star] = '☆';
+      return { id: t.id, marks };
+    });
   }
 
   function placePay(race, no, winners) {
@@ -859,6 +893,6 @@
     mulberry32, hashStr, gauss, COURSES, CLASSES, BET_TYPES, BET, STYLES, GOING,
     bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
     odds, placePay, placeRange, payFromOdds, settlePayouts, expandCombos, createTicket, ticketReturn,
-    bracketSold, formatTime, fmtDate, daySchedule, fmtClock, NAME_WITTY, NAME_JP, NAME_PHRASE, FAMOUS_HORSES, horseNameKind, JOCKEYS, record, marginText, comboProb, canonical, comboKey, harvilleTop3,
+    bracketSold, formatTime, fmtDate, daySchedule, fmtClock, TIPSTERS, NAME_WITTY, NAME_JP, NAME_PHRASE, FAMOUS_HORSES, horseNameKind, JOCKEYS, record, marginText, comboProb, canonical, comboKey, harvilleTop3,
   };
 });

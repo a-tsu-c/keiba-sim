@@ -94,7 +94,7 @@
     const tvx = -S * 0.45, tvz = -Math.min(60, R * 0.45);
 
     const cam = { x: 0, y: 7, z: 40, yaw: -Math.PI / 2, pitch: 0.1, f: 1000 };
-    let camS = 0, span = 40, camL = TRACK_W / 2, camDist = 60;
+    let camS = 0, span = 40, camDist = 60, camL0 = 0, camL1 = TRACK_W;
     let W = 0, H = 0, lastT = null, shot = null, shotSince = -99, segment = 'gate';
     let fX, fZ, rX, rZ, cp, sp;
 
@@ -252,17 +252,19 @@
     function chooseShot(T, pos, order, dt) {
       const lead = pos[order[0]], rem = D - lead;
       let want;
-      if (T < 1.6) want = 'gate';
+      if (opts.prelude != null && T < opts.prelude) want = 'stands';
+      else if (T < 1.6) want = 'gate';
       else {
         const seg = segmentOf(lead);
-        if (seg === 'straight' && rem > 170 && S >= 280) want = 'front';
+        // 最後の直線はスタンド上から斜めに見下ろす(順位が見て分かる)。ゴール寸前で真横に切り替え
+        if (seg === 'straight' && rem > 45) want = 'stretch';
         else if (seg === 'straight' || seg === 'goal') want = 'goal';
         else if (seg === 'back') want = 'high';
         else if (seg[0] === 'c') want = 'corner';
         else want = 'side';
       }
       let cut = false;
-      if (want !== shot && (shot === null || T - shotSince > 2.5 || want === 'front' || want === 'goal' || T < shotSince)) {
+      if (want !== shot && (shot === null || T - shotSince > 2.5 || want === 'stretch' || want === 'goal' || want === 'gate' || T < shotSince)) {
         shot = want; shotSince = T; cut = true;
       }
       const k = cut ? 1 : 1 - Math.exp(-dt * 2.6);
@@ -274,13 +276,39 @@
         cam.f = W * d / Math.max(20, n * 1.15 + 9);
         return;
       }
-      if (shot === 'front') {
-        const top = order.slice(0, Math.min(6, n));
-        const meanLane = top.reduce((a, j) => a + lane[j], 0) / top.length;
-        camL += (clamp(meanLane, 5, TRACK_W - 5) - camL) * k;
-        // 最後の直線上ではワールド X = 走行距離 - D。カメラは直線の延長線上(1 コーナーの奥)
-        const d = lookFrom([230, 7, camL], [lead - D, 1.3, camL]);
-        cam.f += (W * 0.85 * d / 15 - cam.f) * kf;
+      if (shot === 'stands') {
+        // ファンファーレ:内馬場からスタンドの観客をゆっくりパン
+        const u = T - (opts.preludeStart ?? T);
+        const d = lookFrom([-30, 3.2, -14], [-35 - u * 4.5, 11, TRACK_W + 70]);
+        cam.f = W * d / 120;
+        return;
+      }
+      if (shot === 'stretch') {
+        // スタンド上(外ラチの外・高さ 30m)の少し先から、先頭集団を斜めに見下ろす
+        const top = order.slice(0, Math.min(n, 6));
+        const leadC = Math.min(lead, D + 30);
+        const spread = clamp(leadC - pos[top[top.length - 1]], 6, 32);
+        const ls = top.map(j => lane[j]);
+        const lMin = clamp(Math.min(...ls) - 1.5, 0, TRACK_W), lMax = clamp(Math.max(...ls) + 1.5, lMin + 6, TRACK_W);
+        const ts = leadC - spread / 2 + 3;
+        if (cut) { camS = ts; span = spread; camL0 = lMin; camL1 = lMax; }
+        camS += (ts - camS) * k;
+        span += (spread - span) * kf;
+        camL0 += (lMin - camL0) * kf; camL1 += (lMax - camL1) * kf;
+        const cx = clamp(camS - D + 24 + span * 0.4, -S, 70);
+        lookFrom([cx, 30, TRACK_W + 50], [camS - D, 0.8, (camL0 + camL1) / 2]);
+        // 先頭集団の前後と内外が画面に収まる焦点距離
+        setBasis();
+        let fFit = Infinity;
+        for (const [ds, l] of [[span / 2 + 5, camL0], [span / 2 + 5, camL1], [-span / 2 - 4, camL0], [-span / 2 - 4, camL1]]) {
+          for (const y of [0, 2.6]) {
+            const c = toCam(...wp(camS + ds, y, l));
+            if (c.z < 1) continue;
+            fFit = Math.min(fFit, W * 0.45 * c.z / Math.max(0.01, Math.abs(c.x)), H * 0.38 * c.z / Math.max(0.01, Math.abs(c.u)));
+          }
+        }
+        if (isFinite(fFit)) cam.f = cut ? fFit : cam.f + (fFit - cam.f) * kf;
+        keepInView(lead - 1, lane[order[0]]);
         return;
       }
       // l: カメラの横位置(外ラチの外)、back/ahead: コーナーで少し後ろから先を見通す
@@ -331,7 +359,7 @@
 
     function drawTree(t) {
       const b = proj(t.x, 0, t.z);
-      if (!b || b.z > 1400 || (shot === 'front' && b.z < 500)) return; // 望遠の正面カメラでは近い木を写さない
+      if (!b || b.z > 1400) return;
       const r = t.r * b.s;
       if (b.x < -r * 2 || b.x > W + r * 2) return;
       const top = b.y - t.h * b.s;
@@ -352,7 +380,7 @@
       const Xa = -Math.min(380, S + 40), Xb = 80, Zs = TRACK_W + 52;
       poly([[Xa, 0, Zs], [Xb, 0, Zs], [Xb, 4, Zs], [Xa, 4, Zs]], '#9aa0a6');
       poly([[Xa, 4, Zs], [Xb, 4, Zs], [Xb, 22, Zs + 30], [Xa, 22, Zs + 30]], '#5d6670');
-      if (shot === 'front') {
+      if (shot === 'stands') {
         // 観客(段ごとの点描)
         for (let x = Xa + 2; x < Xb; x += 4) {
           for (let v = 0.05; v < 1; v += 0.09) {
@@ -508,7 +536,18 @@
     }
 
     // 横向き。原点=馬体中央の地面、+x が進行方向、y 上向き(単位 m)
-    function horseSide(h, phase, moving, finalPush) {
+    const lerp = (a, b, u) => a + (b - a) * u;
+    // 鞭の動き:振り上げ → 振り下ろし(速い)→ 手綱に戻す。th は鞭の角度(度、+x から反時計回り)
+    function whipPose(phase, no) {
+      const wt = (phase * 0.5 + hash(no * 1.7) ) % 1;
+      const rest = [0.62, 2.02], up = [0.2, 2.38], hit = [0.36, 2.14];
+      if (wt < 0.3) { const u = wt / 0.3; return { th: lerp(195, 100, u), x: lerp(rest[0], up[0], u), y: lerp(rest[1], up[1], u), strike: false }; }
+      if (wt < 0.42) { const u = (wt - 0.3) / 0.12; return { th: lerp(100, 218, u), x: lerp(up[0], hit[0], u), y: lerp(up[1], hit[1], u), strike: u > 0.75 }; }
+      const u = (wt - 0.42) / 0.58;
+      return { th: lerp(218, 195, u), x: lerp(hit[0], rest[0], u), y: lerp(hit[1], rest[1], u), strike: false };
+    }
+
+    function horseSide(h, phase, moving, finalPush, whip = false, px = 20) {
       const [coat, mane, sock] = COAT[h.coat] || COAT['鹿毛'];
       const bob = moving ? 0.075 * Math.sin(TAU * phase) : 0;
       const ext = moving ? 0.1 * Math.sin(TAU * phase + 1.2) : -0.15;
@@ -571,13 +610,25 @@
       ctx.strokeStyle = h.silks.sleeve; ctx.lineWidth = 0.1;
       const reach = finalPush ? 0.12 * Math.sin(TAU * phase) : 0;
       ctx.beginPath(); ctx.moveTo(0.5, 2.16 + jb); ctx.lineTo(0.78 + reach, 1.98 + jb); ctx.lineTo(1.0 + reach + ext * 0.5, 1.86 + bob); ctx.stroke();
+      if (whip) {
+        const w = whipPose(phase, h.no), rad = w.th * Math.PI / 180, L = 0.82;
+        ctx.strokeStyle = h.silks.sleeve; ctx.lineWidth = 0.1;
+        ctx.beginPath(); ctx.moveTo(0.46, 2.18 + jb); ctx.lineTo(w.x, w.y + jb); ctx.stroke();
+        ctx.strokeStyle = '#151515'; ctx.lineWidth = Math.max(0.04, 1.3 / px);
+        const ex = w.x + L * Math.cos(rad), ey = w.y + jb + L * Math.sin(rad);
+        ctx.beginPath(); ctx.moveTo(w.x, w.y + jb); ctx.lineTo(ex, ey); ctx.stroke();
+        if (w.strike) { // 当たった瞬間の動きの線
+          ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = Math.max(0.03, 1 / px);
+          for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.moveTo(ex - 0.1, ey + 0.05 + k * 0.1); ctx.lineTo(ex - 0.32, ey + 0.12 + k * 0.14); ctx.stroke(); }
+        }
+      }
       ctx.fillStyle = CAP[h.bracket];
       ctx.beginPath(); ctx.arc(0.68, 2.34 + jb, 0.135, 0, TAU); ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.025; ctx.stroke();
     }
 
     // 正面(こちらへ向かってくる)
-    function horseFront(h, phase, moving) {
+    function horseFront(h, phase, moving, whip = false, px = 20) {
       const [coat, mane, sock] = COAT[h.coat] || COAT['鹿毛'];
       const bob = moving ? 0.075 * Math.sin(TAU * phase) : 0;
       const leg = (x, off, front) => {
@@ -609,6 +660,12 @@
       ctx.restore();
       ctx.strokeStyle = h.silks.sleeve; ctx.lineWidth = 0.09; ctx.lineCap = 'round';
       [-1, 1].forEach(sd => { ctx.beginPath(); ctx.moveTo(sd * 0.2, 2.3 + jb); ctx.lineTo(sd * 0.12, 2.0 + bob); ctx.stroke(); });
+      if (whip) {
+        const w = whipPose(phase, h.no), a = (w.th - 100) / 118; // 0=振り上げ, 1=振り下ろし
+        const ang = lerp(-0.25, 2.3, clamp(a, 0, 1));
+        ctx.strokeStyle = '#151515'; ctx.lineWidth = Math.max(0.035, 1.2 / px);
+        ctx.beginPath(); ctx.moveTo(0.24, 2.2 + jb); ctx.lineTo(0.24 + 0.7 * Math.sin(ang), 2.2 + jb + 0.7 * Math.cos(ang)); ctx.stroke();
+      }
       ctx.fillStyle = CAP[h.bracket];
       ctx.beginPath(); ctx.arc(0, 2.58 + jb, 0.14, 0, TAU); ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.025; ctx.stroke();
@@ -630,15 +687,17 @@
           const moving = speed[j] > 0.5;
           const phase = moving ? (pos[j] / 6.6 + stridePhase[j]) % 1 : 0;
           const finalPush = D - pos[j] < 400 && pos[j] < D;
+          // 残り 400m から鞭。手綱だけで追う騎手もいる
+          const whip = finalPush && D - pos[j] > 8 && speed[j] > 5 && hash(h.no * 2.3 + race.seed % 101) > 0.15;
           ctx.save();
           ctx.translate(g.x, g.y);
           if (side > 0.42) {
             const face = (b.x - a.x) > 0 ? 1 : -1;
             ctx.scale(g.s * face * Math.min(1, side), -g.s);
-            horseSide(h, phase, moving, finalPush);
+            horseSide(h, phase, moving, finalPush, whip, g.s);
           } else {
             ctx.scale(g.s, -g.s);
-            horseFront(h, phase, moving);
+            horseFront(h, phase, moving, whip, g.s);
           }
           ctx.restore();
         },
@@ -734,7 +793,7 @@
       drawTurfVision();
       drawGrandstand();
       drawRail(-0.2, 'all');
-      const outsideCam = shot !== 'front';
+      const outsideCam = shot !== 'stands'; // スタンド撮り以外はカメラが外ラチの外
       drawRail(TRACK_W + 0.2, outsideCam ? 'far' : 'all');
 
       const objs = [];
