@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow"><title>keiba_sim e2e</title></head>
+<body>
+<pre id="out">running...</pre>
+<iframe id="f" style="width:1280px;height:1400px;border:0"></iframe>
+<script>
+/* UI の通しテスト。http サーバー経由で開く(iframe と同一オリジンが必要) */
+(async () => {
+  const out = [];
+  const log = (ok, msg) => out.push(`${ok ? 'PASS' : 'FAIL'} ${msg}`);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const f = document.getElementById('f');
+  const errors = [];
+  localStorage.removeItem('keiba-sim-v1');
+
+  function load() {
+    return new Promise(res => {
+      f.onload = () => {
+        const w = f.contentWindow;
+        w.addEventListener('error', e => errors.push(e.message));
+        w.alert = m => { w.__alerts = (w.__alerts || []).concat(m); };
+        w.confirm = () => true;
+        res(w);
+      };
+      f.src = 'index.html?' + Math.random();
+    });
+  }
+  const click = (w, sel) => {
+    const el = w.document.querySelector(sel);
+    if (!el) throw new Error('not found: ' + sel);
+    el.click();
+  };
+  const text = (w, sel) => (w.document.querySelector(sel) || {}).textContent || '';
+  const money = s => +s.replace(/[^\d-]/g, '');
+
+  try {
+    let w = await load();
+    const K = () => w.__keiba;
+    log(text(w, '#bankroll') === '¥100,000', '初期所持金 ¥100,000: ' + text(w, '#bankroll'));
+    const paperRows = w.document.querySelectorAll('table.paper > tbody > tr');
+    log(paperRows.length === K().race.n, '馬柱(初期表示)の行数 = 頭数');
+    const runCells = w.document.querySelectorAll('table.paper td.run:not(.none)').length;
+    const expectRuns = K().race.horses.reduce((a, h) => a + Math.min(5, h.career.length), 0);
+    log(runCells === expectRuns, `馬柱の近走セル数 ${runCells} = ${expectRuns}`);
+    const h1 = K().race.horses[0], r1 = h1.past[0];
+    const cell = paperRows[0].querySelector('td.run').textContent;
+    log(cell.includes(r1.dateLabel) && cell.includes(r1.venue) && cell.includes(String(r1.dist)) && cell.includes(r1.rival), '前走セルに日付・場・距離・相手馬: ' + cell.replace(/\s+/g, ' ').trim());
+    click(w, '[data-view="simple"]');
+    log(w.document.querySelectorAll('table.entries tbody tr').length === K().race.n, '出馬表表示に切替(行数 = 頭数)');
+    click(w, '[data-view="paper"]');
+    log(!!w.document.querySelector('table.paper'), '馬柱表示に戻せる');
+
+    // 馬連ボックス 1,2,3
+    click(w, '[data-type="quinella"]');
+    click(w, '[data-method="box"]');
+    for (const v of [1, 2, 3]) click(w, `[data-row="0"][data-val="${v}"]`);
+    log(/3点/.test(text(w, '.preview')), '馬連ボックス3頭 → 3点: ' + text(w, '.preview').trim());
+    click(w, '[data-act="add"]');
+
+    // 単勝 1番人気に 1,100 円
+    const fav = K().race.market.pop.indexOf(1) + 1;
+    click(w, '[data-type="win"]');
+    click(w, `[data-row="0"][data-val="${fav}"]`);
+    click(w, '[data-stake="1000"]');
+    log(/1点/.test(text(w, '.preview')) && /¥1,100/.test(text(w, '.preview')), '単勝 1点×¥1,100: ' + text(w, '.preview').trim());
+    click(w, '[data-act="add"]');
+
+    // 3連単フォーメーション 1着[fav] 2着[1,2,3] 3着[1,2,3,4]
+    click(w, '[data-type="trifecta"]');
+    click(w, '[data-method="formation"]');
+    const others = [1, 2, 3, 4, 5].filter(x => x !== fav).slice(0, 4);
+    click(w, `[data-row="0"][data-val="${fav}"]`);
+    for (const v of others.slice(0, 3)) click(w, `[data-row="1"][data-val="${v}"]`);
+    for (const v of others) click(w, `[data-row="2"][data-val="${v}"]`);
+    log(/9点/.test(text(w, '.preview')), '3連単フォーメーション 1×3×4 → 9点: ' + text(w, '.preview').trim());
+    click(w, '[data-act="add"]');
+    log(w.document.querySelectorAll('.cart li:not(.empty)').length === 3, 'カートに3件');
+
+    // 削除
+    click(w, '[data-rm="2"]');
+    log(w.document.querySelectorAll('.cart li:not(.empty)').length === 2, 'カートから削除できる');
+
+    // 複勝 全頭ボックス(必ず3点的中)
+    click(w, '[data-type="place"]');
+    click(w, '[data-method="box"]');
+    const n = K().race.n;
+    for (let v = 1; v <= n; v++) click(w, `[data-row="0"][data-val="${v}"]`);
+    click(w, '[data-stake="0"]');
+    click(w, '[data-act="add"]');
+
+    click(w, '[data-act="buy"]');
+    const spent = 300 + 1100 + 100 * n;
+    log(money(text(w, '#bankroll')) === 100000 - spent, '購入で所持金が減る: ' + text(w, '#bankroll'));
+    log(K().cur.tickets.length === 3, '購入済み3件');
+
+    // 所持金超過
+    click(w, '[data-type="win"]');
+    click(w, `[data-row="0"][data-val="1"]`);
+    const inp = w.document.getElementById('stake');
+    inp.value = '500000'; inp.dispatchEvent(new w.Event('change', { bubbles: true }));
+    click(w, '[data-act="add"]');
+    click(w, '[data-act="buy"]');
+    log((w.__alerts || []).some(m => /足りません/.test(m)), '所持金不足は購入不可');
+    log(money(text(w, '#bankroll')) === 100000 - spent, '不足時は所持金不変');
+
+    // 発走(カートは破棄確認 → true)
+    click(w, '[data-act="post"]');
+    await sleep(300);
+    log(!!w.document.getElementById('oval'), 'レース画面が表示される');
+    log(money(text(w, '#bankroll')) === 100000 - spent, '再生中は払戻前の所持金を表示(ネタバレ防止): ' + text(w, '#bankroll'));
+    await sleep(1500);
+    const comments = w.document.querySelectorAll('#comment li').length;
+    log(comments >= 1, '実況が流れる: ' + comments + '件');
+    log(!!w.document.getElementById('tv'), '中継映像キャンバスあり');
+    log(w.document.querySelectorAll('#tvTicker .tk').length === K().race.n, '順位ティッカーに全頭');
+    log(w.document.getElementById('tvShot').textContent.length > 0, 'カメラ表示: ' + w.document.getElementById('tvShot').textContent);
+    click(w, '[data-act="skip"]');
+    await sleep(100);
+    log(!w.document.getElementById('tvBoard').hidden && w.document.querySelector('#kakutei.on'), '着順掲示板に「確定」');
+    log(w.document.querySelectorAll('#tvBoard .row').length === Math.min(5, K().race.n), '掲示板に上位5頭');
+    await sleep(1500);
+    log(!!w.document.querySelector('.result'), '結果画面に遷移');
+    const res = K().result;
+    const back = K().cur.tickets.reduce((s, t) => s + t.ret, 0);
+    const expected = K().cur.tickets.reduce((s, t) => s + w.KeibaEngine.ticketReturn(t, res.payouts).total, 0);
+    log(back === expected && back > 0, `払戻の精算 ${back} = 再計算 ${expected}(複勝全頭で必ず的中)`);
+    const placeT = K().cur.tickets.find(t => t.type === 'place');
+    log(placeT.ret === res.payouts.place.reduce((s, x) => s + x.pay, 0), '複勝全頭の払戻 = 3頭分の複勝配当の合計');
+    log(w.document.querySelectorAll('.mytickets li.hit').length >= 1, '的中表示');
+    log(money(text(w, '#bankroll')) === 100000 - spent + back, '所持金 = 初期 - 購入 + 払戻: ' + text(w, '#bankroll'));
+    log(w.document.querySelectorAll('.payouts th').length === 8, '払戻表に8券種');
+    log(w.document.querySelectorAll('.result table.entries tbody tr').length === K().race.n, '着順表の行数');
+
+    // リロードしても結果・所持金が変わらない(結果はシード固定)
+    const bank = text(w, '#bankroll'), winner = res.order[0];
+    w = await load();
+    await sleep(100);
+    log(text(w, '#bankroll') === bank, 'リロード後も所持金保持');
+    log(!!w.document.querySelector('.result') && K().result.order[0] === winner, 'リロード後も同じ結果(再抽選なし)');
+
+    // 次のレース(3 場の時刻順)
+    const sch = K().schedule();
+    log(w.document.querySelectorAll('.program .pc[data-race]').length === 36, '番組表に3場×12R');
+    click(w, '[data-act="next"]');
+    log(K().save.sel === sch.races[1].key && !K().cur.done, '次は時刻順の次レース: ' + K().race.venue + K().race.raceNo + 'R ' + K().race.postTime);
+    log(w.document.querySelector('[data-act="post"]').textContent.includes('見送り'), '未購入なら「見送り」表示');
+
+    // 履歴
+    click(w, '[data-act="history"]');
+    log(w.document.querySelectorAll('.modal tbody tr').length === 1, '履歴に1レース');
+    click(w, '.modalbox [data-act="closehist"]');
+
+    // 先のレースを番組表から選んで購入 → 発走で前の未購入レースを自動スキップ
+    const buyWin = no => { click(w, '[data-type="win"]'); click(w, `[data-row="0"][data-val="${no}"]`); click(w, '[data-act="add"]'); click(w, '[data-act="buy"]'); };
+    const target = sch.races[4], later = sch.races[6];
+    click(w, `.pc[data-race="${target.key}"]`);
+    log(K().save.sel === target.key && !!w.document.querySelector('table.paper'), '番組表から先のレースを開ける');
+    buyWin(1);
+    click(w, `.pc[data-race="${later.key}"]`);
+    buyWin(2);
+    log(!!w.document.querySelector('.others li'), 'ほかのレースの購入済みが表示される');
+    log(w.document.querySelector('.pc.bought[data-race="' + target.key + '"]') && w.document.querySelector('.pc.bought[data-race="' + later.key + '"]'), '番組表に購入済みマーク');
+    const postLabel = w.document.querySelector('[data-act="post"]').textContent;
+    const tgtName = w.KeibaEngine.COURSES[target.venueIdx].venue + target.raceNo + 'R';
+    log(postLabel.includes(tgtName), `発走ボタンは最も早い購入レース(${tgtName}): ${postLabel.trim()}`);
+    log(/3 レースは自動スキップ/.test(text(w, '.bet')), '自動スキップ数の予告');
+    const b3 = money(text(w, '#bankroll'));
+    click(w, '[data-act="post"]');
+    await sleep(200);
+    log(K().save.sel === target.key && !!K().anim, '購入した最も早いレースが中継される');
+    log([1, 2, 3].every(i => K().rstate(sch.races[i].key).done && K().rstate(sch.races[i].key).skipped), '前の未購入3レースは自動スキップで確定');
+    log(!K().rstate(later.key).done, '後の購入レースは未発走のまま');
+    log((text(w, '.skipnote') || '').includes('3 レース'), 'スキップ通知: ' + text(w, '.skipnote').trim());
+    click(w, '[data-act="skip"]');
+    await sleep(900);
+    const ret1 = K().cur.tickets.reduce((a, t) => a + t.ret, 0);
+    log(money(text(w, '#bankroll')) === b3 + ret1, '自動スキップしたレースは所持金に影響なし');
+    click(w, '[data-act="next"]');
+    log(K().save.sel === sch.races[5].key, '結果の後は時刻順の次レース(未購入)を表示');
+    log(w.document.querySelector('[data-act="post"]').textContent.includes(w.KeibaEngine.COURSES[later.venueIdx].venue + later.raceNo + 'R'), '発走ボタンは次の購入レースを指す');
+    click(w, '[data-act="post"]');
+    await sleep(200);
+    log(K().save.sel === later.key && K().rstate(sch.races[5].key).skipped, '2つ目の購入レースまで自動スキップ');
+    click(w, '[data-act="skip"]');
+    await sleep(900);
+    // 自動スキップしたレースの結果も見られる
+    click(w, `.pc[data-race="${sch.races[2].key}"]`);
+    log(!!w.document.querySelector('.result') && text(w, '.mytickets').includes('自動スキップ'), '自動スキップしたレースの結果を表示できる');
+    log(K().rstate(sch.races[2].key).winnerNo === K().result.order[0], 'スキップ時の勝ち馬 = 表示した結果の勝ち馬(軽量計算と一致)');
+
+    // 全レース確定 → 翌開催日
+    sch.races.forEach(r => Object.assign(K().rstate(r.key), { done: true, winnerNo: 1, winner: '-' }));
+    click(w, '[data-act="next"]');
+    log(!!w.document.querySelector('[data-act="nextday"]'), '全36レース終了で翌開催日ボタン');
+    click(w, '[data-act="nextday"]');
+    log(K().save.meet.day === 2 && K().save.sel === K().schedule().races[0].key, '翌開催日は最初のレースから: ' + K().race.dateLabel);
+    K().schedule().races.forEach(r => Object.assign(K().rstate(r.key), { done: true, winnerNo: 1, winner: '-' }));
+    click(w, `.pc[data-race="${K().schedule().races[0].key}"]`);
+    click(w, '[data-act="next"]');
+    click(w, '[data-act="nextday"]');
+    log(K().schedule().venues.join() !== sch.venues.join(), '翌週は別の3場: ' + K().schedule().venues.map(v => w.KeibaEngine.COURSES[v].venue).join('・'));
+
+    // リセット
+    click(w, '[data-act="reset"]');
+    log(text(w, '#bankroll') === '¥100,000', 'リセットで初期化');
+
+    log(errors.length === 0, 'JS エラーなし ' + errors.join(' | '));
+  } catch (e) {
+    log(false, '例外: ' + e.message + ' ' + (e.stack || ''));
+  }
+  const pass = out.filter(l => l.startsWith('PASS')).length;
+  document.getElementById('out').textContent = `RESULT ${pass}/${out.length} passed\n` + out.join('\n');
+})();
+</script>
+</body>
+</html>
