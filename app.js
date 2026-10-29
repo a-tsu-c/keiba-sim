@@ -50,7 +50,7 @@
   const headerCache = new Map();
   let scheduleCache = null;
   // 出走馬の生成方式を変えたら上げる(同じシードでも別の馬になるため、古い開催は作り直す)
-  const MEET_GEN = 4;
+  const MEET_GEN = 5;
   function newMeet(day) {
     save.meet = { gen: MEET_GEN, day, seedBase: newSeed(), races: {} };
     save.sel = null;
@@ -325,12 +325,14 @@
       <td class="run ${r.pos <= 3 ? 'r' + r.pos : ''}">
         <div class="rl"><span>${r.dateLabel} ${r.venue}</span><span>${r.pop}人気</span></div>
         <div class="rn">${esc(r.raceName)}${classTag(r.cls)}</div>
-        <div class="rp"><b class="pos">${r.pos}</b><span class="sub">着/${r.field}頭</span></div>
+        <div class="rp"><b class="pos">${r.pos}</b><span class="sub">着/${r.field}頭</span>${r.note ? '<span class="excuse-mark" title="' + r.note + '">⚠</span>' : ''}</div>
         <div class="rt"><span class="sub">走破</span><b>${E.formatTime(r.time)}</b><span class="sub">勝ち ${E.formatTime(winTime(r))}</span></div>
         <div class="rc ${same ? 'same' : ''}">${surfShort(r.surface)}${r.dist} ${r.going} ${r.no}番</div>
         <div class="sub">${esc(r.jockey)} ${r.kinryo.toFixed(1)} ${r.weight}kg</div>
         <div>${r.passing} <span class="sub">上</span>${r.last3f.toFixed(1)}${r.last3fRank <= 3 ? `<b class="l3">${circled(r.last3fRank)}</b>` : ''}</div>
         <div class="rv">${esc(r.rival)} <span>(${r.diff.toFixed(1)})</span></div>
+        ${r.note ? `<div class="excuse">⚠ ${r.note}</div>` : ''}
+        ${r.sharedWith && r.sharedWith.length ? `<div class="vs" title="今回の出走馬と同じレース">対戦 ${r.sharedWith.map(v => `${v.no}番${v.pos}着`).join('・')}</div>` : ''}
       </td>`;
   }
 
@@ -361,7 +363,7 @@
     }).join('');
     return `
       <section class="card">
-        <h2>馬柱 <small>${race.surface}${race.distance}m と同条件(同じ馬場で±200m)の走りは<span class="same">緑</span>/走破=その馬のタイム・勝ち=勝ち馬のタイム/上がり3F の順位1〜3位は①②③/成績は 1着-2着-3着-着外/(タイム差)は勝ち馬との差・勝った時は2着馬との差</small></h2>
+        <h2>馬柱 <small>${race.surface}${race.distance}m と同条件(同じ馬場で±200m)の走りは<span class="same">緑</span>/走破=その馬のタイム・勝ち=勝ち馬のタイム/⚠=出遅れ・不利(実力より着順が悪く出た走り)/対戦=今回の出走馬と同じレース/上がり3F の順位1〜3位は①②③/成績は 1着-2着-3着-着外/(タイム差)は勝ち馬との差・勝った時は2着馬との差</small></h2>
         ${viewTabs()}
         ${tipsterBoard()}
         <div class="tablewrap">
@@ -611,6 +613,7 @@
             <div class="rvbtns">
               <button class="chip small ${save.sound ? 'on' : ''}" data-act="sound" id="soundBtn">${save.sound ? '🔊 音あり' : '🔇 音なし'}</button>
               ${KeibaSound.canSpeak ? `<button class="chip small ${save.voice ? 'on' : ''}" data-act="voice" id="voiceBtn">${save.voice ? '🎙 実況の声あり' : '🎙 実況の声なし'}</button>` : ''}
+              ${voiceSelectHtml()}
               <button class="chip small ${save.side ? 'on' : ''}" data-act="side" id="sideBtn">出馬表</button>
               <span class="sub">カメラ: <span id="tvShot"></span></span>
             </div>
@@ -622,6 +625,14 @@
         </div>
         <aside class="rvside">${sideCardHtml()}</aside>
       </section>`;
+  }
+
+  // 実況の声の選択(この端末で使える日本語の声。人の声に近いものが既定)
+  function voiceSelectHtml() {
+    const list = KeibaSound.canSpeak ? KeibaSound.voices() : [];
+    if (list.length < 2) return '';
+    const cur = KeibaSound.voiceName;
+    return `<select id="voiceSel" class="voicesel" title="実況の声">${list.map(n => `<option ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
   }
 
   // レース中に横で見る出馬表(印・オッズ・現在の順位・自分の馬券)
@@ -784,6 +795,11 @@
     }
   });
   document.addEventListener('change', e => {
+    if (e.target.id === 'voiceSel') {
+      save.voiceName = e.target.value; persist(); KeibaSound.setVoiceName(save.voiceName);
+      KeibaSound.speak('この声で実況します。');
+      return;
+    }
     if (e.target.id === 'stake') {
       const v = Math.floor((+e.target.value || 0) / 100) * 100;
       ui.stake = Math.max(100, Math.min(v, 1000000));
@@ -813,13 +829,14 @@
     KeibaSound.hush();
     KeibaSound.setEnabled(save.sound);
     KeibaSound.setVoice(save.voice);
+    KeibaSound.setVoiceName(save.voiceName);
     KeibaSound.setPace(save.speed);
     // 重賞は発走前にレース紹介 → ファンファーレ(G1 は長い版)
     const graded = !!race.cls.grade;
     const fanLen = graded ? INTRO + KeibaSound.fanfareLength(race.cls.key) + 2.8 : 0;
     const T0 = -PRE_ROLL - fanLen;
     anim = {
-      T: T0, endT, last: performance.now(), said: new Set(), mentioned: new Set(), hist: [], lastRank: 0, done: false, hiddenReturn, skipped: false, boardAt: null,
+      T: T0, endT, last: performance.now(), lastSayAt: performance.now(), fill: 0, said: new Set(), mentioned: new Set(), hist: [], lastRank: 0, done: false, hiddenReturn, skipped: false, boardAt: null,
       prelude: graded ? -PRE_ROLL : null, preludeStart: T0, cheered: false, fanfareAt: graded ? T0 + INTRO : null,
     };
     // requestAnimationFrame が止まる環境(非表示タブなど)でも進むよう、タイマーで補助する
@@ -915,8 +932,9 @@
 
   // 直線の攻防・ゴールなどは、しゃべっている途中でも切り替えて読む
   const URGENT = new Set(['start', '400', '200', '100', 'goal', 'final']);
-  function say(text, key = '') {
-    KeibaSound.speak(text, URGENT.has(key));
+  function say(text, key = '', heat) {
+    KeibaSound.speak(text, URGENT.has(key), heat);
+    if (anim) anim.lastSayAt = performance.now();
     const sub = $('#tvSub');
     if (sub) sub.textContent = text;
     const ul = $('#comment');
@@ -937,6 +955,48 @@
     if (L < 1.8) return '1馬身半';
     return `${Math.round(L)}馬身`;
   }
+  // 合間の実況の台詞(順番に回し、その時の状況から作る)
+  function fillerLine(order, pos, nm, mover, gap, rem) {
+    const a = anim, n = race.n, H = j => race.horses[j];
+    const rankOf = j => order.indexOf(j) + 1;
+    const mine = [...myHorses()].map(no => no - 1);
+    const lanes = tv ? tv.lanes : [];
+    const side = (x, y) => (lanes[x] != null && lanes[y] != null ? (lanes[x] < lanes[y] ? '内' : '外') : 'その後ろ');
+    const r100 = Math.max(100, Math.ceil(rem / 100) * 100);
+    const inStretch = rem <= race.course.straight;
+    let cands;
+    if (inStretch) {
+      const m = mover(4, 8);
+      cands = [
+        () => `${nm(order[0])}先頭!リードは${lenText(gap(0, 1))}!`,
+        () => `${nm(order[1])}が${gap(0, 1) < LEN ? '並びかける' : '懸命に追う'}!`,
+        () => (m != null && m !== order[0] ? `外から${nm(m)}!${nm(m)}が伸びてくる!` : `${nm(order[2])}も脚を伸ばしている!`),
+        () => `残り${r100}!`,
+        () => (mine.length ? `${nm(mine[0])}は${rankOf(mine[0])}番手!` : null),
+        () => `内で${nm(order.slice(0, 4).reduce((x, y) => (lanes[y] < lanes[x] ? y : x)))}が粘っている!`,
+      ];
+    } else {
+      const mid = Math.floor(n / 2), fav = race.market.pop.indexOf(1), m = mover(8, n);
+      cands = [
+        () => (gap(0, 1) > LEN * 3 ? `先頭は${nm(order[0])}、後続を${lenText(gap(0, 1))}離して軽快に飛ばしています。` : `先頭は${nm(order[0])}、リードは${lenText(gap(0, 1))}。`),
+        () => `2番手に${nm(order[1])}、${side(order[2], order[1])}に${nm(order[2])}が続きます。`,
+        () => `中団には${nm(order[mid - 1])}、${nm(order[mid])}${n > 9 ? `、${nm(order[mid + 1])}` : ''}。`,
+        () => `後方グループ、${nm(order[n - 3])}、${nm(order[n - 2])}、最後方に${nm(order[n - 1])}。`,
+        () => (m != null ? `${nm(m)}、じわじわと位置を上げてきました。` : null),
+        () => { const k = rankOf(fav); return `1番人気の${nm(fav)}は${k}番手${k <= 3 ? '、いい位置' : k > n * 0.6 ? '、まだ後ろ' : ''}。`; },
+        () => (mine.length ? `注目の${nm(mine[a.fill % mine.length])}は現在${rankOf(mine[a.fill % mine.length])}番手。` : null),
+        () => `残り${r100}メートル${tv && tv.segmentLabel ? `、${tv.segmentLabel}` : ''}。`,
+        () => `${nm(order[0])}の鞍上${H(order[0]).jockey.name}、${gap(0, 1) < LEN ? '後ろを気にしながら' : 'マイペースに持ち込んで'}います。`,
+        () => (a.said.has('split') ? `前半は${{ H: '速い流れ', M: '淀みのない流れ', S: 'ゆったりとした流れ' }[result.pace]}です。` : null),
+      ];
+    }
+    for (let k = 0; k < cands.length; k++) {
+      const t = cands[a.fill++ % cands.length]();
+      if (t) return { text: t, heat: inStretch ? 1 : 0 };
+    }
+    return null;
+  }
+
   function commentary(pos) {
     const D = race.distance, a = anim, T = a.T;
     const order = race.horses.map((h, j) => j).sort((x, y) => pos[y] - pos[x]);
@@ -1020,6 +1080,15 @@
       return `残り200!${nm(order[0])}先頭、${nm(order[1])}が迫る!${m != null && m !== order[1] && m !== order[0] ? `さらに${nm(m)}!` : ''}`;
     });
     if (rem <= 80 && rem > 0 && gap(0, 1) < LEN * 0.6) once('100', () => `${H(order[0]).name}か!${H(order[1]).name}か!`);
+    // 合間の実況:要所の台詞のあいだも途切れずに状況を伝える(声があるなら読み終わり次第、なければ数秒ごと)
+    if (T > 2.5 && rem > 6 && !a.said.has('goal')) {
+      const now = performance.now();
+      const live = KeibaSound.canSpeak && save.voice && save.sound;
+      if (live ? !KeibaSound.busy && now - a.lastSayAt > 300 : now - a.lastSayAt > 2000) {
+        const line = fillerLine(order, pos, nm, mover, gap, rem);
+        if (line) say(line.text, 'fill', line.heat);
+      }
+    }
     if (lead >= D) once('goal', () => {
       if (!a.cheered) { a.cheered = true; KeibaSound.cheer(); KeibaSound.crowd(0.15); }
       const r0 = result.rows[0], r1 = result.rows[1];

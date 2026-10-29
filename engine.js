@@ -349,11 +349,12 @@
   // ---------- 戦績(馬柱) ----------
   // 1 走ずつ古い順に「その時のクラス・条件で、相手関係の中でどれだけ走れたか」を作る。
   // 人気は能力の見立て(+前走の着順)、着順は当日の出来も加えた走りで決まるので、人気と着順が自然に結びつく
-  const CAREER = { oppSd: 5.5, daySd: 6.5, percSd: 3, link: 0.15, linkWin: 0.5, growth: 3.5, growthMax: 9 };
+  const CAREER = { excuse: 0.08, oppSd: 5.5, daySd: 5, percSd: 3, link: 0.15, linkWin: 0.5, growth: 2, growthMax: 5, timeK: 0.0011, topRef: 12 };
   function makeCareer(rng, h, cls, date, used) {
     const target = targetWins(rng, cls);
+    // 昇級後もしばらく今のクラスで走っている馬が多い(勝ちは古い戦績に寄る)
     const m = cls.key === 'maiden' ? 1 + Math.floor(rng() * 7)
-      : clamp(target + 1 + Math.floor(rng() * (h.age - 2) * 6), target + 1, 32);
+      : clamp(target + 2 + Math.floor(rng() * (h.age - 2) * 7), target + 2, 32);
     let gaps = Array.from({ length: m }, () => (rng() < 0.08 ? 16 + Math.floor(rng() * 25)
       : weighted(rng, [[2, 2], [3, 3], [4, 4], [5, 3], [6, 2], [8, 2], [10, 1], [12, 1]])));
     // デビューは 2 歳の 6 月以降(馬齢は 1 月 1 日に加算)
@@ -362,6 +363,12 @@
     const maxWeeks = Math.floor((date - debutMin) / (7 * DAY_MS));
     const total = gaps.reduce((a, b) => a + b, 0);
     if (total > maxWeeks) gaps = gaps.map(g => Math.max(2, Math.floor(g * maxWeeks / total)));
+    // 最小間隔(2 週)のせいでまだはみ出す時は、長い間隔から詰める
+    for (let sum = gaps.reduce((a, b) => a + b, 0); sum > maxWeeks; sum--) {
+      const k = gaps.indexOf(Math.max(...gaps));
+      if (gaps[k] <= 1) break;
+      gaps[k]--;
+    }
     const runs = [];
     let t = date;
     for (let i = 0; i < m; i++) {
@@ -369,6 +376,8 @@
       t -= gaps[i] * 7 * DAY_MS;
       runs.push({ date: t, dateLabel: fmtDate(t) });
     }
+    // 最後に勝ってから今のクラスで走った回数(昇級直後の馬もいれば、何走も足踏みしている馬もいる)
+    const stay = target === 0 ? 0 : Math.min(m - target, weighted(rng, [[0, 5], [1, 4], [2, 3], [3, 3], [4, 2], [5, 2], [6, 1], [8, 1]]));
     // 古い順にクラスを進めながら 1 走ずつ
     let ci = 0, wins = 0, prevPos = null;
     for (let i = m - 1; i >= 0; i--) {
@@ -376,7 +385,9 @@
       const ageThen = h.age - (year - new Date(r.date).getUTCFullYear());
       const debut = i === m - 1 && ageThen === 2;
       r.cls = ci < 4 ? CLASSES[PROGRESSION[ci]] : openClassFor(rng, cls);
-      let course = pick(rng, COURSES);
+      // その週に開催していた 3 場から(1 週ごとに入れ替わる)
+      const wk = Math.floor((date - RACE_DATE0) / (7 * DAY_MS)) - Math.round((date - r.date) / (7 * DAY_MS));
+      let course = COURSES[pick(rng, MEET_SETS[((wk % 2) + 2) % 2])];
       let surface = rng() < 0.82 ? h.surface : (h.surface === '芝' ? 'ダート' : '芝');
       let dist = nearest(course[surface === '芝' ? 'turf' : 'dirt'], h.distBest + gauss(rng) * 300);
       r.raceName = null;
@@ -399,10 +410,10 @@
       const rel = cp - r.cls.level;
       // 着順は相手関係と当日の出来で自然に決める。クラスと勝利数が合わなくなる時だけ勝ち負けを固定する
       // 勝つレースは「相手関係から見た勝率」と「残りの勝ち数 ÷ 残りの走数」を掛け合わせて選ぶ(強い立場のレースで勝ちやすい)
-      const left = i + 1, need = target - wins;
+      const left = i + 1 - stay, need = target - wins;
       const pModel = 1 / (1 + (field - 1) * Math.exp(-rel / 3.2));
       const base = need / left;
-      const pWin = need <= 0 ? 0 : need >= left ? 1 : (pModel * base) / (pModel * base + (1 - pModel) * (1 - base));
+      const pWin = need <= 0 || left <= 0 ? 0 : need >= left ? 1 : (pModel * base) / (pModel * base + (1 - pModel) * (1 - base));
       const mustWin = need <= 0 ? false : rng() < pWin;
       const opp = Array.from({ length: field - 1 }, () => gauss(rng) * CAREER.oppSd);
       const oppRun = opp.map(o => o + gauss(rng) * CAREER.daySd);
@@ -410,7 +421,16 @@
       let mine = rel + gauss(rng) * CAREER.daySd;
       for (let k = 0; k < 40 && (mine > top) !== mustWin; k++) mine = rel + gauss(rng) * CAREER.daySd;
       if ((mine > top) !== mustWin) mine = mustWin ? top + 0.1 : top - 0.1;
+      // 出遅れ・不利(負けた理由がはっきりしている走り。実力より着順が悪く出る)
+      r.note = null;
+      if (!mustWin && rng() < CAREER.excuse) {
+        r.note = rng() < 0.5 ? '出遅れ' : '不利';
+        mine -= 3 + rng() * 5;
+      }
       r.pos = 1 + oppRun.filter(x => x > mine).length;
+      // タイムの元(自分と勝ち馬・2 着馬の走り)。走りの差がそのままタイム差になる
+      r.perf = { mine, top, second: mustWin ? top : Math.max(...oppRun.filter(x => x !== top), mine) };
+      r.rating = r.cls.level + mine;
       // 人気:能力の見立て + 前走の印象
       // 調教・パドックの気配で当日の出来も一部は読まれる(link)
       const look = rel + (mine - rel) * (mustWin ? CAREER.linkWin : CAREER.link) + gauss(rng) * CAREER.percSd + (prevPos == null ? 0 : prevPos <= 3 ? 2.5 : prevPos >= 10 ? -1.5 : 0);
@@ -426,10 +446,14 @@
       r.kinryo = clamp(h.kinryo + pick(rng, [-1, 0, 0, 0, 1]), 50, 59);
       r.weight = w;
       w += Math.round(gauss(rng) * 3) * 2;
-      const winT = r.dist / (baseSpeed(r.dist, r.surface, r.going) * (1 + (lvl - 60) * 0.0012)) + 0.6 + gauss(rng) * 0.5;
+      const T0 = r.dist / (baseSpeed(r.dist, r.surface, r.going) * (1 + (lvl - 60) * 0.0012));
+      // 勝ち時計:クラス水準+勝ち馬の走りの良さ。1 ポイント ≒ 0.11%
+      const F = CAREER.timeK * T0;
+      const winTop = r.pos === 1 ? r.perf.mine : r.perf.top;
+      const winT = T0 + 0.6 - (winTop - CAREER.topRef) * F * 0.5 + gauss(rng) * 0.25;
       // diff: 勝ち馬とのタイム差(勝った時は 2 着馬との差をマイナスで)
-      r.diff = r.pos === 1 ? -Math.round((0.05 + rng() * 0.4) * 10) / 10
-        : Math.round(((r.pos - 1) * 0.13 + Math.abs(gauss(rng)) * 0.12 * Math.sqrt(r.pos - 1)) * 10) / 10;
+      r.diff = r.pos === 1 ? -(Math.round((r.perf.mine - r.perf.second) * F * 10) / 10 || 0)
+        : Math.round((r.perf.top - r.perf.mine) * F * 10) / 10;
       r.time = winT + Math.max(0, r.diff);
       r.rival = horseName(rng, used);
       const K = r.dist <= 1400 ? 2 : 4;
@@ -442,6 +466,80 @@
       r.last3fRank = clamp(Math.round(1 + (r.last3f - (base3f - 1.0)) / 2.4 * (r.field - 1)), 1, r.field);
     }
     return runs;
+  }
+
+  // 同じ日・同じ競馬場・同じ条件の過去走は「同じレース」。着順・馬番・勝ち時計・相手の名前をそろえる。
+  // 勝ち馬が 2 頭になる組み合わせは、片方を別のレース(別の競馬場/別の重賞)に移す
+  function linkCareers(rng, horses) {
+    const keyOf = r => `${r.date}|${r.venue}|${r.cls.key}|${r.surface}|${r.dist}|${r.raceName === '新馬'}`;
+    for (let pass = 0; pass < 4; pass++) {
+      const groups = new Map();
+      horses.forEach(h => h.career.forEach(r => {
+        const k = keyOf(r);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push({ h, r });
+      }));
+      let moved = false;
+      for (const g of groups.values()) {
+        if (g.length < 2) continue;
+        const winners = g.filter(x => x.r.pos === 1);
+        if (winners.length > 1) {
+          // 2 頭目以降の勝ち馬を別レースへ
+          for (const { h, r } of winners.slice(1)) {
+            if (r.cls.grade) {
+              const e = gradedFor(rng, r.cls.key, { surface: r.surface, dist: r.dist, age: 3, sex: h.sex });
+              const alt = e && e.name !== r.raceName ? e : GRADED.find(x => x.grade === r.cls.key && x.name !== r.raceName && (!x.sex || x.sex === h.sex));
+              if (alt) Object.assign(r, { venue: alt.venue, surface: alt.surface, dist: alt.dist, raceName: alt.name });
+            } else {
+              const others = COURSES.filter(c => c.venue !== r.venue);
+              const c = pick(rng, others);
+              r.venue = c.venue;
+              r.dist = nearest(c[r.surface === '芝' ? 'turf' : 'dirt'], r.dist);
+              r.raceName = plainName(rng, r.cls, c.venue, r.raceName === '新馬');
+            }
+          }
+          moved = true;
+          continue;
+        }
+        // 同じレース:着順を重ねない・馬番を変える・頭数をそろえる
+        g.sort((a, b) => a.r.pos - b.r.pos || a.r.diff - b.r.diff);
+        const field = Math.max(...g.map(x => x.r.field), g.length);
+        const base = g[0].r;
+        const usedNo = new Set();
+        g.forEach((x, k) => {
+          const r = x.r;
+          if (k > 0 && r.pos <= g[k - 1].r.pos) r.pos = g[k - 1].r.pos + 1;
+          if (k > 0 && r.pos > 1 && r.diff < g[k - 1].r.diff) r.diff = Math.max(0, g[k - 1].r.diff);
+          while (usedNo.has(r.no)) r.no = r.no % field + 1;
+          usedNo.add(r.no);
+          Object.assign(r, { field: Math.max(field, r.pos), going: base.going, raceName: base.raceName });
+        });
+        const fieldAll = Math.max(...g.map(x => x.r.field));
+        g.forEach(x => { x.r.field = fieldAll; });
+        // 勝ち時計と相手の名前
+        const winT = base.time - Math.max(0, base.diff);
+        const win = g.find(x => x.r.pos === 1);
+        const second = g.find(x => x.r.pos === 2);
+        g.forEach(x => {
+          const r = x.r;
+          if (win && r !== win.r) r.rival = win.h.name;
+          else if (!win) r.rival = base.rival;
+          r.time = winT + Math.max(0, r.diff);
+        });
+        if (win && second) { win.r.rival = second.h.name; win.r.diff = -Math.max(0, second.r.diff); }
+        g.forEach(x => { x.r.sharedWith = g.filter(y => y !== x).map(y => ({ name: y.h.name, no: y.h.no, pos: y.r.pos })); });
+      }
+      if (!moved) break;
+    }
+    // 同じ日・同じ競馬場で、別のレースなのに名前がかぶったら付け直す
+    const names = new Map();
+    horses.forEach(h => h.career.forEach(r => {
+      const k = `${r.date}|${r.venue}|${r.raceName}`, id = `${r.cls.key}|${r.surface}|${r.dist}`;
+      if (!names.has(k)) { names.set(k, id); return; }
+      if (names.get(k) === id || r.cls.grade || /^(新馬|未勝利|\d勝クラス)$/.test(r.raceName)) return;
+      for (let t = 0; t < 10 && names.has(`${r.date}|${r.venue}|${r.raceName}`); t++) r.raceName = plainName(rng, r.cls, r.venue, false);
+      names.set(`${r.date}|${r.venue}|${r.raceName}`, id);
+    }));
   }
 
   // [1着, 2着, 3着, 着外]
@@ -510,6 +608,9 @@
       h.bracket = bracketOf(h.no, n);
       h.kinryo = kinryoFor(h, cls, handicap, rng);
       h.career = makeCareer(rng, h, cls, date, used);
+    });
+    linkCareers(rng, horses);
+    horses.forEach(h => {
       h.past = h.career.slice(0, 5);
       const near = x => Math.abs(x.dist - distance) <= 200;
       h.records = {
@@ -518,6 +619,7 @@
         venue: record(h.career, x => x.venue === course.venue),
       };
       h.trainingGrade = h.training > 1.0 ? 'A' : h.training > 0.2 ? 'B' : h.training > -0.7 ? 'C' : 'D';
+      h.formRating = formRatingOf(h, { surface, distance });
     });
 
     // 毛色・勝負服(見た目だけ。乱数列を分けて他の生成に影響させない)
@@ -578,7 +680,7 @@
   // 展開の効き方(較正値)。前半が速いほど前の馬がバテて差しが届き、遅いと前残り
   // 較正(300R):勝ち馬の脚質 逃げ10%・先行48%・差し32%・追込10%。遅い展開は前が7割、速い展開は差し・追込が6割強
   const PACE = { nige: 0.007, senko: 0.002, noise: 0.006, min: -0.02, max: 0.03, follow: 0.6, drainExp: 12, kickE: 0.55, tire: 0.9, tireMax: 0.14, slowKick: 80 };
-  const DAY_NOISE = 16; // 当日の出来のブレ(ポイント)
+  const SIM = { DAY_NOISE: 13 }; // 当日の出来のブレ(ポイント)
   const ABILITY_K = 0.00034; // 1 ポイントあたりの速度比
 
   function simulateRace(race, rng, record) {
@@ -587,7 +689,7 @@
     const straightF = 0.85 + race.course.straight / 1000 * 0.35;
     const T0 = D / race.vbase;
     const st = race.horses.map(h => {
-      const day = gauss(rng) * DAY_NOISE;
+      const day = gauss(rng) * SIM.DAY_NOISE;
       // クラス水準が絶対的な速さ、クラス内の能力差は小さめに効く
       const mult = 1 + (race.cls.level - 60) * 0.0012 + (h.points + day - race.cls.level) * ABILITY_K;
       let delay = clamp(0.05 + gauss(rng) * 0.08 + (50 - h.gt) * 0.003, 0, 0.5);
@@ -741,6 +843,19 @@
     return t;
   }
 
+  const MARKET = { truthExp: 0.85, formW: 0.3 };
+  // 近走の内容(過去 5 走のうち良い 3 走の評価。出遅れ・不利の走りは割り引いて見る)
+  // 今回と同じ馬場・近い距離・最近の走りほど重く見る。いちばん悪い 1 走は度外視
+  function formRatingOf(h, race) {
+    const runs = h.past.map((x, k) => ({
+      v: x.rating + (x.note ? 3 : 0),
+      w: (x.surface === race.surface ? 1 : 0.3) * Math.exp(-Math.abs(x.dist - race.distance) / 500) * (1 - k * 0.12),
+    }));
+    if (runs.length > 2) runs.splice(runs.indexOf(runs.reduce((a, b) => (b.v < a.v ? b : a))), 1);
+    const W = runs.reduce((a, b) => a + b.w, 0);
+    return runs.reduce((a, b) => a + b.v * b.w, 0) / W;
+  }
+
   function payFromOdds(o) {
     // 100 円あたり払戻(10 円未満切り捨て、最低 100 円)
     return Math.max(100, Math.floor(o * 100 / 10 + 1e-9) * 10);
@@ -748,8 +863,12 @@
 
   function buildMarket(race) {
     const rng = rngFor(race.seed, 'market');
+    // 大衆は真の勝率をノイズ込みで見積もり、さらに近走の成績(見た目のデータ)を重く見る
+    const form = race.horses.map(h => h.formRating);
+    const fm = form.reduce((a, b) => a + b, 0) / form.length;
+    const fsd = Math.sqrt(form.reduce((a, b) => a + (b - fm) ** 2, 0) / form.length) || 1;
     const raw = race.horses.map((h, i) =>
-      Math.pow(race.probs.win[i] + 0.003, 0.93) * Math.exp(gauss(rng) * 0.15) * (1 + (h.jockey.skill - 65) * 0.004));
+      Math.pow(race.probs.win[i] + 0.003, MARKET.truthExp) * Math.exp(MARKET.formW * (form[i] - fm) / fsd) * Math.exp(gauss(rng) * 0.15) * (1 + (h.jockey.skill - 65) * 0.004));
     const sum = raw.reduce((a, b) => a + b, 0);
     const q = raw.map(r => r / sum);
     const winPay = q.map(x => payFromOdds((1 - BET.win.takeout) / x));
@@ -988,7 +1107,7 @@
 
   return {
     mulberry32, hashStr, gauss, COURSES, CLASSES, BET_TYPES, BET, STYLES, GOING,
-    PACE, EARLY, KICK_STYLE, CAREER, bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
+    PACE, EARLY, KICK_STYLE, CAREER, SIM, MARKET, bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
     odds, placePay, placeRange, payFromOdds, settlePayouts, expandCombos, createTicket, ticketReturn,
     bracketSold, formatTime, fmtDate, daySchedule, fmtClock, TIPSTERS, GRADED, NAME_WITTY, NAME_JP, NAME_PHRASE, FAMOUS_HORSES, horseNameKind, JOCKEYS, record, marginText, comboProb, canonical, comboKey, harvilleTop3,
   };

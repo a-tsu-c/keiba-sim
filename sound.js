@@ -164,13 +164,23 @@
 
   // ---------- 実況の声(ブラウザの音声合成) ----------
   const synth = root.speechSynthesis || null;
-  let voice = null, speaking = false, pending = null, voiceOn = true, rateBoost = 0;
+  let startedAt = 0, voice = null, speaking = false, pending = null, voiceOn = true, rateBoost = 0, wanted = null;
+  const jaVoices = () => (synth ? synth.getVoices().filter(v => /^ja/i.test(v.lang)) : []);
+  // 人の声に近いものから順に選ぶ:ニューラル音声(Edge の Natural)→ 高品質版(Premium/Enhanced)→ Google 日本語 → 標準
+  function score(v) {
+    const n = v.name;
+    let sc = 0;
+    if (/Natural|Neural/i.test(n)) sc += 100;
+    if (/Premium|プレミアム/i.test(n)) sc += 80;
+    if (/Enhanced|拡張|高品質/i.test(n)) sc += 70;
+    if (/Google/i.test(n)) sc += 50;
+    if (/Keita|Otoya|Hattori|Ichiro|Daichi|Naoki/i.test(n)) sc += 10; // 男性の声(実況らしい)
+    if (/Compact|Eloquence/i.test(n)) sc -= 30;
+    return sc;
+  }
   function pickVoice() {
-    if (!synth) return;
-    const ja = synth.getVoices().filter(v => /^ja/i.test(v.lang));
-    // 男性のアナウンサー風の声を優先(macOS: Otoya / Hattori、Chrome: Google 日本語)
-    const pref = ['Otoya', 'Hattori', 'Ichiro', 'Google 日本語', 'Kyoko', 'O-ren'];
-    voice = pref.map(p => ja.find(v => v.name.includes(p))).find(Boolean) || ja[0] || null;
+    const ja = jaVoices();
+    voice = (wanted && ja.find(v => v.name === wanted)) || ja.slice().sort((a, b) => score(b) - score(a))[0] || null;
   }
   if (synth) { pickVoice(); try { synth.addEventListener('voiceschanged', pickVoice); } catch (e) { /* 古いブラウザ */ } }
 
@@ -187,18 +197,20 @@
     const u = new SpeechSynthesisUtterance(toSpeech(item.text));
     u.lang = 'ja-JP';
     if (voice) u.voice = voice;
-    const excited = /!/.test(item.text);
-    u.rate = Math.min(2, 1.12 + rateBoost + (excited ? 0.12 : 0));
-    u.pitch = excited ? 1.15 : 1.0;
+    // 実況らしい抑揚:盛り上がる場面ほど速く高く。毎回少し揺らして一本調子を避ける
+    const heat = item.heat ?? (/!/.test(item.text) ? 1 : 0);
+    const wobble = (Math.random() - 0.5) * 0.06;
+    u.rate = Math.min(2, 1.2 + rateBoost + heat * 0.14 + wobble);
+    u.pitch = Math.min(2, 1.0 + heat * 0.18 + wobble);
     u.volume = 1;
-    speaking = true;
+    speaking = true; startedAt = Date.now();
     u.onend = u.onerror = () => { speaking = false; if (pending) { const p = pending; pending = null; speakNow(p); } };
     synth.speak(u);
   }
   // urgent: 直線の攻防やゴールなど、今しゃべっている途中でも切り替える台詞
-  function speak(text, urgent = false) {
+  function speak(text, urgent = false, heat) {
     if (!synth || !voiceOn || !enabled) return;
-    const item = { text };
+    const item = { text, heat };
     if (speaking && urgent) { pending = null; synth.cancel(); speaking = false; speakNow(item); return; }
     if (speaking) { pending = item; return; } // 溜めずに最新の 1 本だけ待たせる
     speakNow(item);
@@ -210,6 +222,11 @@
 
   root.KeibaSound = {
     fanfare, fanfareLength, crowd, cheer, stop, setEnabled, speak, hush, setVoice, setPace,
+    voices: () => jaVoices().map(v => v.name),
+    get voiceName() { return voice ? voice.name : ''; },
+    setVoiceName(name) { wanted = name || null; pickVoice(); },
     get enabled() { return enabled; }, get canSpeak() { return !!synth; },
+    // 読み終わりの通知が来ないブラウザもあるので、8 秒たったら空いたとみなす
+    get busy() { return speaking && voiceOn && enabled && Date.now() - startedAt < 8000; },
   };
 })(typeof self !== 'undefined' ? self : this);

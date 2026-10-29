@@ -109,7 +109,7 @@
           ok(r.pos >= 1 && r.pos <= r.field && r.pop >= 1 && r.pop <= r.field && r.no <= r.field, '着順・人気・馬番');
           ok(r.passing.split('-').every(x => +x >= 1 && +x <= r.field), '通過順 ' + r.passing);
           ok(r.last3f > 31 && r.last3f < 42, '上がり ' + r.last3f);
-          ok((r.pos === 1) === (r.diff < 0) || (r.pos > 1 && r.diff === 0), 'タイム差の符号');
+          ok(r.pos === 1 ? r.diff <= 0 : r.diff >= 0, 'タイム差の符号(勝ちは 2 着との差を 0 以下で)');
           const course = E.COURSES.find(x => x.venue === r.venue);
           ok(course[r.surface === '芝' ? 'turf' : 'dirt'].includes(r.dist), '実在する距離 ' + r.venue + r.surface + r.dist);
         }
@@ -193,6 +193,47 @@
     ok(pop1top3 / pop1 > 0.6, `1番人気の複勝率 ${(pop1top3 / pop1 * 100).toFixed(1)}%`);
     ok(withPlace / horses > 0.55, `4走以上で2・3着がある馬 ${(withPlace / horses * 100).toFixed(1)}%`);
     ok(gradedRuns > 50, '重賞の戦績がある');
+  });
+
+  test('同じ日・同じ場の過去走は同じレースとして整合/前走1着は少数/人気は近走内容に沿う', () => {
+    let horses = 0, lastWin = 0, rho = 0, races = 0, sharedRuns = 0;
+    for (let s = 820; s < 850; s++) {
+      const r = E.generateRace({ seed: s, raceNo: 1 + (s % 12), venueIdx: s % 6 });
+      races++;
+      const groups = new Map();
+      r.horses.forEach(h => {
+        horses++;
+        if (h.past[0].pos === 1) lastWin++;
+        h.career.forEach(x => {
+          const k = `${x.date}|${x.venue}|${x.raceName}|${x.surface}|${x.dist}|${x.cls.key}`;
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push({ h, x });
+        });
+      });
+      for (const g of groups.values()) {
+        if (g.length < 2) continue;
+        sharedRuns += g.length;
+        ok(g.filter(y => y.x.pos === 1).length <= 1, '同じレースで勝ち馬は1頭');
+        eq(new Set(g.map(y => y.x.pos)).size, g.length, '同じレースで着順が重ならない');
+        eq(new Set(g.map(y => y.x.no)).size, g.length, '同じレースで馬番が重ならない');
+        ok(g.every(y => y.x.field === g[0].x.field && y.x.going === g[0].x.going), '同じレースは頭数・馬場が同じ');
+        const wt = g.map(y => Math.round((y.x.time - Math.max(0, y.x.diff)) * 10));
+        ok(wt.every(v => Math.abs(v - wt[0]) <= 1), '同じレースは勝ち時計が同じ');
+        const win = g.find(y => y.x.pos === 1);
+        if (win) ok(g.filter(y => y !== win).every(y => y.x.rival === win.h.name), '負けた馬の相手欄は勝ち馬');
+        // 着順が上の馬ほどタイムが速い(同タイムは可)
+        const byPos = g.slice().sort((a, b) => a.x.pos - b.x.pos);
+        for (let k = 1; k < byPos.length; k++) ok(byPos[k].x.time >= byPos[k - 1].x.time - 1e-9, '着順とタイムの順序');
+      }
+      // 人気と近走内容(条件が近い走りほど重く見た評価)の順位相関
+      const n = r.n, fr = r.horses.map((h, i) => [h.formRating, i]).sort((a, b) => b[0] - a[0]);
+      const rank = []; fr.forEach(([, i], k) => { rank[i] = k + 1; });
+      let d2 = 0; for (let i = 0; i < n; i++) d2 += (r.market.pop[i] - rank[i]) ** 2;
+      rho += 1 - 6 * d2 / (n * (n * n - 1));
+    }
+    ok(lastWin / horses < 0.2, `前走1着の馬 ${(lastWin / horses * 100).toFixed(1)}%`);
+    ok(rho / races > 0.5, `人気と近走内容の順位相関 ${(rho / races).toFixed(2)}`);
+    ok(sharedRuns > 0, '出走馬どうしの対戦歴がある');
   });
 
   test('展開と脚質(差し・追込も届く/速いペースほど後ろが有利)', () => {
