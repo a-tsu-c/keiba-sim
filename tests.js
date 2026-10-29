@@ -163,6 +163,57 @@
     ok(histN / total < 0.25, `レース内のもじり名の割合 ${(histN / total).toFixed(2)}`);
   });
 
+  test('戦績:人気と着順の結びつき・2着3着もある・重賞名と条件の整合', () => {
+    const names = E.GRADED.map(g => g.name);
+    eq(new Set(names).size, names.length, '重賞名の重複');
+    const byName = new Map(E.GRADED.map(g => [g.name, g]));
+    let pop1 = 0, pop1top3 = 0, longN = 0, longW = 0, horses = 0, withPlace = 0, gradedRuns = 0;
+    for (let s = 700; s < 760; s++) {
+      const r = E.generateRace({ seed: s, raceNo: 1 + (s % 12), venueIdx: s % 6, light: true });
+      for (const h of r.horses) {
+        if (h.career.length >= 4) { horses++; if (h.records.all[1] + h.records.all[2] > 0) withPlace++; }
+        const year = new Date(r.date).getUTCFullYear();
+        for (const x of h.career) {
+          ok(x.pop >= 1 && x.pop <= x.field && x.pos >= 1 && x.pos <= x.field, '人気・着順の範囲');
+          if (x.pop === 1) { pop1++; if (x.pos <= 3) pop1top3++; }
+          if (x.pop >= 10) { longN++; if (x.pos === 1) longW++; }
+          if (x.cls.grade) {
+            gradedRuns++;
+            const g = byName.get(x.raceName);
+            if (!g) continue; // 条件に合う重賞がない時は平場名
+            const ageThen = h.age - (year - new Date(x.date).getUTCFullYear());
+            ok(g.grade === x.cls.key && g.venue === x.venue && g.dist === x.dist && g.surface === x.surface, `重賞の条件 ${x.raceName}`);
+            ok(!g.sex || g.sex === h.sex, `牝馬限定 ${x.raceName} ${h.sex}`);
+            ok(g.age === '2' ? ageThen === 2 : g.age === '3' ? ageThen === 3 : g.age === '4+' ? ageThen >= 4 : ageThen >= 3, `年齢条件 ${x.raceName} ${ageThen}歳`);
+          }
+        }
+      }
+    }
+    ok(longW / longN < 0.03, `10番人気以下の勝率 ${(longW / longN * 100).toFixed(1)}%`);
+    ok(pop1top3 / pop1 > 0.6, `1番人気の複勝率 ${(pop1top3 / pop1 * 100).toFixed(1)}%`);
+    ok(withPlace / horses > 0.55, `4走以上で2・3着がある馬 ${(withPlace / horses * 100).toFixed(1)}%`);
+    ok(gradedRuns > 50, '重賞の戦績がある');
+  });
+
+  test('展開と脚質(差し・追込も届く/速いペースほど後ろが有利)', () => {
+    const fronts = [], wins = { 逃げ: 0, 先行: 0, 差し: 0, 追込: 0 };
+    const N = 240;
+    for (let s = 1; s <= N; s++) {
+      const r = E.generateRace({ seed: s * 11, raceNo: 1 + (s % 12), venueIdx: s % 6, light: true });
+      const res = E.runRace(r);
+      const w = r.horses[res.order[0] - 1].style;
+      wins[w]++;
+      fronts.push({ p: r.paceAdj, front: w === '逃げ' || w === '先行' });
+    }
+    const closers = (wins['差し'] + wins['追込']) / N;
+    ok(closers > 0.3 && closers < 0.55, `差し・追込の勝ち馬シェア ${(closers * 100).toFixed(0)}% ${JSON.stringify(wins)}`);
+    ok(wins['逃げ'] / N > 0.06, '逃げ切りもある');
+    fronts.sort((a, b) => a.p - b.p);
+    const t = Math.floor(N / 3), share = a => a.filter(x => x.front).length / a.length;
+    const slow = share(fronts.slice(0, t)), fast = share(fronts.slice(-t));
+    ok(slow > fast + 0.15, `遅い展開は前有利 ${(slow * 100).toFixed(0)}% / 速い展開 ${(fast * 100).toFixed(0)}%`);
+  });
+
   test('予想家の印(各自 ◎○▲△△☆・見立ての違い)', () => {
     eq(E.TIPSTERS.length, 5);
     const expWin = {}, favHonmei = {};
@@ -299,7 +350,7 @@
       if (popOf(res.order[0]) === 1) fav++;
       if (res.order.slice(0, 3).some(no => popOf(no) === 1)) favTop3++;
       for (let k = 1; k < res.rows.length; k++) ok(res.rows[k].time >= res.rows[k - 1].time, 'タイム順');
-      ok(res.rows.every(r => r.last3f > 31 && r.last3f < 42), '上がり3F ' + res.rows.map(r => r.last3f.toFixed(1)));
+      ok(res.rows.every(r => r.last3f > 31 && r.last3f < 44), '上がり3F ' + res.rows.map(r => r.last3f.toFixed(1)));
       if (race.surface === '芝' && race.distance === 1600) mile.push(res.rows[0].time);
     }
     const fw = fav / N, ft = favTop3 / N;
@@ -355,6 +406,10 @@
           }
           ok(tv.camera.y >= 20 && tv.camera.pitch > 0.2, `直線は高い位置から見下ろす ${race.venue}`);
         }
+        if (tv.shot === 'front') {
+          const p = tv.screenOf(pos[lead] - 1, 1.3, tv.lanes[lead]);
+          ok(p && p.x > 0 && p.x < tv.size.W && p.y > 0 && p.y < tv.size.H, `正面映像で先頭馬が画面内 ${race.venue}`);
+        }
         ok(tv.lanes.every(l => l >= 0 && l <= KeibaTV.TRACK_W), '横位置がコース内');
         // すり抜け(体が重なる)がないか:前後 3m 以内で横 0.9m 未満に並ぶ組
         for (let x = 0; x < race.n; x++) for (let y = x + 1; y < race.n; y++) {
@@ -365,7 +420,7 @@
       if (fan) eq(shots.slice(0, 2), ['stands', 'gate'], 'ファンファーレ(スタンド)→ ゲート ' + label);
       else eq(shots[0], 'gate', 'ゲートから始まる ' + label);
       ok(shots.includes('corner'), 'コーナーのカットあり ' + label);
-      ok(shots.indexOf('stretch') > 0 && shots.indexOf('stretch') < shots.lastIndexOf('goal'), '直線(斜め上)→ ゴール前 ' + label);
+      ok(shots.indexOf('front') > 0 && shots.indexOf('front') < shots.indexOf('stretch') && shots.indexOf('stretch') < shots.lastIndexOf('goal'), '直線は正面 → スタンド上 → ゴール前 ' + label);
       ok(stretchMiss / Math.max(1, stretchFrames) < 0.02, `直線映像で上位5頭が画面外 ${stretchMiss}/${stretchFrames} ${label}`);
       eq(shots[shots.length - 1], 'goal', 'ゴール前で終わる ' + label);
       ok(offscreen / frames < 0.01, `先頭馬が画面外 ${offscreen}/${frames} ${label}`);

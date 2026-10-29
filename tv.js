@@ -94,7 +94,7 @@
     const tvx = -S * 0.45, tvz = -Math.min(60, R * 0.45);
 
     const cam = { x: 0, y: 7, z: 40, yaw: -Math.PI / 2, pitch: 0.1, f: 1000 };
-    let camS = 0, span = 40, camDist = 60, camL0 = 0, camL1 = TRACK_W;
+    let camS = 0, span = 40, camDist = 60, camL = TRACK_W / 2, camL0 = 0, camL1 = TRACK_W;
     let W = 0, H = 0, lastT = null, shot = null, shotSince = -99, segment = 'gate';
     let fX, fZ, rX, rZ, cp, sp;
 
@@ -209,7 +209,7 @@
     }
     // 体が重なっている 2 頭を左右に押し分ける(外の馬は外へ、内の馬は内へ)
     function separate(pos) {
-      for (let iter = 0; iter < 4; iter++) {
+      for (let iter = 0; iter < 8; iter++) {
         let moved = false;
         for (let a = 0; a < n; a++) {
           if (pos[a] <= 12) continue;
@@ -256,15 +256,16 @@
       else if (T < 1.6) want = 'gate';
       else {
         const seg = segmentOf(lead);
-        // 最後の直線はスタンド上から斜めに見下ろす(順位が見て分かる)。ゴール寸前で真横に切り替え
-        if (seg === 'straight' && rem > 45) want = 'stretch';
+        // 最後の直線:入口はゴール奥からの正面 → 中盤はスタンド屋上から見下ろす真横 → ゴール前は客席側から真横
+        if (seg === 'straight' && rem > S * 0.58 && S >= 280) want = 'front';
+        else if (seg === 'straight' && rem > 55) want = 'stretch';
         else if (seg === 'straight' || seg === 'goal') want = 'goal';
         else if (seg === 'back') want = 'high';
         else if (seg[0] === 'c') want = 'corner';
         else want = 'side';
       }
       let cut = false;
-      if (want !== shot && (shot === null || T - shotSince > 2.5 || want === 'stretch' || want === 'goal' || want === 'gate' || T < shotSince)) {
+      if (want !== shot && (shot === null || T - shotSince > 2.5 || want === 'front' || want === 'stretch' || want === 'goal' || want === 'gate' || T < shotSince)) {
         shot = want; shotSince = T; cut = true;
       }
       const k = cut ? 1 : 1 - Math.exp(-dt * 2.6);
@@ -283,21 +284,30 @@
         cam.f = W * d / 120;
         return;
       }
+      if (shot === 'front') {
+        // ゴール板の奥(直線の延長線上)から望遠で、向かってくる馬群を正面に捉える
+        const top = order.slice(0, Math.min(6, n));
+        const meanLane = top.reduce((a, j) => a + lane[j], 0) / top.length;
+        if (cut) camL = clamp(meanLane, 5, TRACK_W - 5);
+        camL += (clamp(meanLane, 5, TRACK_W - 5) - camL) * k;
+        const d = lookFrom([230, 7, camL], [lead - D, 1.3, camL]);
+        const fT = W * 0.85 * d / 15;
+        cam.f = cut ? fT : cam.f + (fT - cam.f) * kf;
+        return;
+      }
       if (shot === 'stretch') {
-        // スタンド上(外ラチの外・高さ 30m)の少し先から、先頭集団を斜めに見下ろす
+        // スタンド屋上(高さ 24m)から真横に見下ろす。先頭集団の前後・内外が収まるようズーム
         const top = order.slice(0, Math.min(n, 6));
         const leadC = Math.min(lead, D + 30);
         const spread = clamp(leadC - pos[top[top.length - 1]], 6, 32);
         const ls = top.map(j => lane[j]);
         const lMin = clamp(Math.min(...ls) - 1.5, 0, TRACK_W), lMax = clamp(Math.max(...ls) + 1.5, lMin + 6, TRACK_W);
-        const ts = leadC - spread / 2 + 3;
+        const ts = leadC - spread / 2 + 2;
         if (cut) { camS = ts; span = spread; camL0 = lMin; camL1 = lMax; }
         camS += (ts - camS) * k;
         span += (spread - span) * kf;
         camL0 += (lMin - camL0) * kf; camL1 += (lMax - camL1) * kf;
-        const cx = clamp(camS - D + 24 + span * 0.4, -S, 70);
-        lookFrom([cx, 30, TRACK_W + 50], [camS - D, 0.8, (camL0 + camL1) / 2]);
-        // 先頭集団の前後と内外が画面に収まる焦点距離
+        lookFrom([camS - D, 24, TRACK_W + 52], [camS - D, 0.8, (camL0 + camL1) / 2]);
         setBasis();
         let fFit = Infinity;
         for (const [ds, l] of [[span / 2 + 5, camL0], [span / 2 + 5, camL1], [-span / 2 - 4, camL0], [-span / 2 - 4, camL1]]) {
@@ -359,7 +369,7 @@
 
     function drawTree(t) {
       const b = proj(t.x, 0, t.z);
-      if (!b || b.z > 1400) return;
+      if (!b || b.z > 1400 || shot === 'front') return; // 望遠の正面カメラでは木が巨大に写るので省く
       const r = t.r * b.s;
       if (b.x < -r * 2 || b.x > W + r * 2) return;
       const top = b.y - t.h * b.s;
@@ -380,7 +390,7 @@
       const Xa = -Math.min(380, S + 40), Xb = 80, Zs = TRACK_W + 52;
       poly([[Xa, 0, Zs], [Xb, 0, Zs], [Xb, 4, Zs], [Xa, 4, Zs]], '#9aa0a6');
       poly([[Xa, 4, Zs], [Xb, 4, Zs], [Xb, 22, Zs + 30], [Xa, 22, Zs + 30]], '#5d6670');
-      if (shot === 'stands') {
+      if (shot === 'stands' || shot === 'front') {
         // 観客(段ごとの点描)
         for (let x = Xa + 2; x < Xb; x += 4) {
           for (let v = 0.05; v < 1; v += 0.09) {
@@ -693,6 +703,9 @@
           ctx.translate(g.x, g.y);
           if (side > 0.42) {
             const face = (b.x - a.x) > 0 ? 1 : -1;
+            // 画面上の進行方向に合わせて少し傾ける(コーナーや見下ろしで走る向きが不自然にならないように)
+            const tilt = clamp(Math.atan2((b.y - a.y) * face, Math.abs(b.x - a.x)), -0.35, 0.35);
+            ctx.rotate(tilt);
             ctx.scale(g.s * face * Math.min(1, side), -g.s);
             horseSide(h, phase, moving, finalPush, whip, g.s);
           } else {
@@ -793,13 +806,14 @@
       drawTurfVision();
       drawGrandstand();
       drawRail(-0.2, 'all');
-      const outsideCam = shot !== 'stands'; // スタンド撮り以外はカメラが外ラチの外
+      const outsideCam = shot !== 'stands' && shot !== 'front'; // それ以外はカメラが外ラチの外
       drawRail(TRACK_W + 0.2, outsideCam ? 'far' : 'all');
 
       const objs = [];
       for (let k = 1; 200 * k < Math.min(D + 60, lap - 60); k++) { // ハロン棒は 1 周ぶんまで
         const s = D - 200 * k;
         const c = toCam(...wp(s, 1, -0.9));
+        if (shot === 'front' && c.z < camDist * 0.95) continue; // 正面望遠ではカメラと先頭の間のハロン棒を写さない
         if (c.z > 0.5 && c.z < 1500) objs.push({ z: c.z, draw: () => drawPole({ s, l: -0.9, label: String(2 * k) }) });
       }
       const gc = toCam(...wp(D, 2, -1.2));

@@ -20,12 +20,12 @@
   // meet: その日の開催(3 場 × 12R)。races[key] = { tickets, done, skipped, winnerNo, winner }
   function defaultSave() {
     return { v: 2, bankroll: START_MONEY, topups: 0, speed: 4, view: 'paper', stats: { wagered: 0, returned: 0, races: 0, hitRaces: 0 }, history: [], meet: null, sel: null,
-      sound: true, side: true, tipsters: {} };
+      sound: true, voice: true, side: true, tipsters: {} };
   }
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(KEY));
-      if (s && s.v === 2) return { sound: true, side: true, tipsters: {}, ...s };
+      if (s && s.v === 2) return { sound: true, voice: true, side: true, tipsters: {}, ...s };
       if (s && s.v === 1) {
         // 旧形式(1 場ずつ):未精算の馬券は払い戻して引き継ぐ
         const refund = s.cur && s.cur.status !== 'done' ? s.cur.tickets.reduce((a, t) => a + t.cost, 0) : 0;
@@ -50,7 +50,7 @@
   const headerCache = new Map();
   let scheduleCache = null;
   // 出走馬の生成方式を変えたら上げる(同じシードでも別の馬になるため、古い開催は作り直す)
-  const MEET_GEN = 3;
+  const MEET_GEN = 4;
   function newMeet(day) {
     save.meet = { gen: MEET_GEN, day, seedBase: newSeed(), races: {} };
     save.sel = null;
@@ -610,6 +610,7 @@
               <button class="chip small" data-act="skip">スキップ ⏭</button></div>
             <div class="rvbtns">
               <button class="chip small ${save.sound ? 'on' : ''}" data-act="sound" id="soundBtn">${save.sound ? '🔊 音あり' : '🔇 音なし'}</button>
+              ${KeibaSound.canSpeak ? `<button class="chip small ${save.voice ? 'on' : ''}" data-act="voice" id="voiceBtn">${save.voice ? '🎙 実況の声あり' : '🎙 実況の声なし'}</button>` : ''}
               <button class="chip small ${save.side ? 'on' : ''}" data-act="side" id="sideBtn">出馬表</button>
               <span class="sub">カメラ: <span id="tvShot"></span></span>
             </div>
@@ -748,15 +749,19 @@
     }
     if (d.stake != null) { ui.stake = +d.stake === 0 ? 100 : Math.min(ui.stake + +d.stake, 1000000); render(); return; }
     if (d.rm != null) { cart.splice(+d.rm, 1); render(); return; }
-    if (d.speed) { save.speed = +d.speed; persist(); document.querySelectorAll('[data-speed]').forEach(b => b.classList.toggle('on', +b.dataset.speed === save.speed)); return; }
+    if (d.speed) { save.speed = +d.speed; persist(); KeibaSound.setPace(save.speed); document.querySelectorAll('[data-speed]').forEach(b => b.classList.toggle('on', +b.dataset.speed === save.speed)); return; }
     switch (d.act) {
       case 'add': addToCart(); break;
       case 'buy': buy(); break;
       case 'post': post(); break;
-      case 'skip': if (anim) { anim.skipped = true; anim.T = anim.endT; KeibaSound.stop(); step(performance.now()); } break;
+      case 'skip': if (anim) { anim.skipped = true; anim.T = anim.endT; KeibaSound.stop(); KeibaSound.hush(); step(performance.now()); } break;
       case 'sound':
         save.sound = !save.sound; persist(); KeibaSound.setEnabled(save.sound);
         el.classList.toggle('on', save.sound); el.textContent = save.sound ? '🔊 音あり' : '🔇 音なし';
+        break;
+      case 'voice':
+        save.voice = !save.voice; persist(); KeibaSound.setVoice(save.voice);
+        el.classList.toggle('on', save.voice); el.textContent = save.voice ? '🎙 実況の声あり' : '🎙 実況の声なし';
         break;
       case 'side': {
         save.side = !save.side; persist();
@@ -788,7 +793,8 @@
 
   // ---------- レース再生 ----------
   const PRE_ROLL = 3; // ゲートイン完了から発走までの秒数
-  const SHOT_LABEL = { stands: 'スタンド', gate: 'ゲート', side: 'サイド', corner: 'コーナー', high: '俯瞰', stretch: '直線(スタンド上から)', goal: 'ゴール前' };
+  const INTRO = 6;    // 重賞のレース紹介(ファンファーレの前)の秒数
+  const SHOT_LABEL = { stands: 'スタンド', gate: 'ゲート', side: 'サイド', corner: 'コーナー', high: '俯瞰', front: '直線正面', stretch: '直線(スタンド屋上)', goal: 'ゴール前' };
 
   // 先頭が距離 d を通過した時刻(フレーム間は線形補間)
   function passTime(d) {
@@ -804,22 +810,25 @@
     const endT = (result.frames.length - 1) * result.dt;
     if (anim) clearInterval(anim.timer);
     KeibaSound.stop();
+    KeibaSound.hush();
     KeibaSound.setEnabled(save.sound);
-    // 重賞は発走前にファンファーレ(G1 は長い版)
+    KeibaSound.setVoice(save.voice);
+    KeibaSound.setPace(save.speed);
+    // 重賞は発走前にレース紹介 → ファンファーレ(G1 は長い版)
     const graded = !!race.cls.grade;
-    const fanLen = graded ? KeibaSound.fanfareLength(race.cls.key) + 2.8 : 0;
+    const fanLen = graded ? INTRO + KeibaSound.fanfareLength(race.cls.key) + 2.8 : 0;
     const T0 = -PRE_ROLL - fanLen;
     anim = {
       T: T0, endT, last: performance.now(), said: new Set(), mentioned: new Set(), hist: [], lastRank: 0, done: false, hiddenReturn, skipped: false, boardAt: null,
-      prelude: graded ? -PRE_ROLL : null, preludeStart: T0, cheered: false,
+      prelude: graded ? -PRE_ROLL : null, preludeStart: T0, cheered: false, fanfareAt: graded ? T0 + INTRO : null,
     };
     // requestAnimationFrame が止まる環境(非表示タブなど)でも進むよう、タイマーで補助する
     anim.timer = setInterval(() => { if (anim && performance.now() - anim.last > 150) step(performance.now()); }, 100);
     render();
     if (graded) {
       $('#tvFan').hidden = false;
-      say(`${race.venue}競馬場、本日のメインレース。${race.cls.name}、${race.name}。${race.surface}${race.distance}m、${race.n}頭立て。間もなくファンファーレです。`);
-      KeibaSound.fanfare(race.cls.key);
+      say(`${race.venue}競馬場、本日のメインレース。${race.cls.name}、${race.name}。${race.surface}${race.distance}m、${race.n}頭立て。間もなくファンファーレです。`, 'intro');
+      KeibaSound.crowd(0.05);
     } else {
       say('各馬順調にゲートイン。態勢完了。');
       KeibaSound.crowd(0.06);
@@ -904,7 +913,10 @@
     }
   }
 
-  function say(text) {
+  // 直線の攻防・ゴールなどは、しゃべっている途中でも切り替えて読む
+  const URGENT = new Set(['start', '400', '200', '100', 'goal', 'final']);
+  function say(text, key = '') {
+    KeibaSound.speak(text, URGENT.has(key));
     const sub = $('#tvSub');
     if (sub) sub.textContent = text;
     const ul = $('#comment');
@@ -931,7 +943,7 @@
     const H = j => race.horses[j];
     // 初めて呼ぶ馬は馬番つき
     const nm = j => { const h = H(j); if (a.mentioned.has(h.no)) return h.name; a.mentioned.add(h.no); return `${h.no}番${h.name}`; };
-    const once = (key, fn) => { if (!a.said.has(key)) { a.said.add(key); const t = fn(); if (t) say(t); } };
+    const once = (key, fn) => { if (!a.said.has(key)) { a.said.add(key); const t = fn(); if (t) say(t, key); } };
     const lead = pos[order[0]], rem = D - lead;
     const gap = (x, y) => pos[order[x]] - pos[order[y]];
     // 順位の履歴(1 秒ごと)から、直近で順位を上げている馬を探す
@@ -947,6 +959,7 @@
       return best;
     };
 
+    if (a.fanfareAt != null && T >= a.fanfareAt) once('fanfare', () => { KeibaSound.fanfare(race.cls.key); return ''; });
     if (a.prelude != null && T >= a.prelude) once('gatein', () => { $('#tvFan').hidden = true; return '各馬ゲートイン完了。態勢整いました。'; });
     if (T > 0.5) once('start', () => {
       KeibaSound.crowd(0.12);
@@ -977,10 +990,8 @@
     // 1000m(短距離は 600m)通過タイムとペース
     const mark = D >= 1400 ? 1000 : 600;
     if (lead >= mark && rem > 200) once('split', () => {
-      const t = passTime(mark), ref = result.rows[0].time * mark / D;
-      const r = t / ref;
-      // シミュレーターの分布(中央値 1.014・上下 1 割で ±0.009)に合わせ、速い方・遅い方の約 2 割をハイ/スローと呼ぶ
-      const pace = r < 1.007 ? 'ハイペース' : r > 1.021 ? 'スローペース' : '平均ペース';
+      const t = passTime(mark);
+      const pace = { H: 'ハイペース', M: '平均ペース', S: 'スローペース' }[result.pace];
       const tail = pace === 'ハイペース' ? '。先行勢には厳しい流れ、差し馬の出番があるか' : pace === 'スローペース' ? '。ゆったりとした流れ、前の馬に有利な展開' : '。淀みのない流れです';
       return `${mark}m通過は${(t).toFixed(1).replace('.', '秒')}、${pace}${tail}。`;
     });

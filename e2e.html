@@ -34,6 +34,7 @@
   };
   const text = (w, sel) => (w.document.querySelector(sel) || {}).textContent || '';
   const money = s => +s.replace(/[^\d-]/g, '');
+  const KeibaSoundOk = w => !!(w.KeibaSound && w.KeibaSound.canSpeak);
 
   try {
     let w = await load();
@@ -124,7 +125,11 @@
     // レース中の出馬表(横)
     log(w.document.querySelectorAll('.rvside table.sidecard tbody tr').length === K().race.n, 'レース中の出馬表に全頭');
     log(w.document.querySelectorAll('.rvside .side-tickets li').length === 3, 'レース中の出馬表に購入馬券3件');
+    log(text(w, `#sc-now-${K().race.horses[0].no}`) === '—' || K().anim.T > 0, '発走前は順位を出さない');
+    for (let k = 0; k < 40 && K().anim && K().anim.T < 1; k++) await sleep(100);
+    await sleep(200);
     log(/位$/.test(text(w, `#sc-now-${K().race.horses[0].no}`)), 'レース中の出馬表に現在の順位: ' + text(w, `#sc-now-${K().race.horses[0].no}`));
+    log(!KeibaSoundOk(w) || !!w.document.getElementById('voiceBtn'), '実況の声のボタン');
     click(w, '#sideBtn');
     log(!w.document.getElementById('raceview').classList.contains('withside') && !K().save.side, '出馬表を閉じられる');
     click(w, '#sideBtn');

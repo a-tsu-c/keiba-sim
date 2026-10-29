@@ -79,8 +79,8 @@
   const BET = Object.fromEntries(BET_TYPES.map(b => [b.key, b]));
 
   const STYLES = ['逃げ', '先行', '差し', '追込'];
-  const EARLY = { 逃げ: 1.011, 先行: 1.005, 差し: 0.996, 追込: 0.990 };
-  const KICK_STYLE = { 逃げ: 0.6, 先行: 0.85, 差し: 1.1, 追込: 1.3 };
+  const EARLY = { 逃げ: 1.013, 先行: 1.005, 差し: 0.996, 追込: 0.990 };
+  const KICK_STYLE = { 逃げ: 0.6, 先行: 0.85, 差し: 1.3, 追込: 1.5 };
   const GOING = ['良', '稍重', '重', '不良'];
 
   // 馬名:実在の命名パターン(冠名・外国語の組み合わせ・和名・文章型・故事のもじり)を参考にした架空の名前。
@@ -287,7 +287,69 @@
   }
   const nearest = (list, d) => list.reduce((a, b) => (Math.abs(b - d) < Math.abs(a - d) ? b : a));
 
-  // 全戦績を新しい順に生成。着順は当日と同じ要素(適性・馬場・調子)から決まるので予想の材料になる
+  // ---------- レース名 ----------
+  // 重賞は固定のカタログ(名前・競馬場・距離・条件が毎回同じ)。実在の重賞をもじった架空の名前
+  const GRADED_G1 = [
+    ['天翔賞(秋)', '東京', '芝', 2000, '3+'], ['ジャパングランドカップ', '東京', '芝', 2400, '3+'], ['東都ダービー', '東京', '芝', 2400, '3'],
+    ['レディースダービー', '東京', '芝', 2400, '3', '牝'], ['クイーンマイル', '東京', '芝', 1600, '4+', '牝'], ['関東マイルチャンピオン', '東京', '芝', 1600, '3+'],
+    ['ダートキングカップ', '東京', 'ダート', 1600, '4+'], ['有明記念', '中山', '芝', 2500, '3+'], ['卯月賞', '中山', '芝', 2000, '3'],
+    ['スプリントキングS', '中山', '芝', 1200, '3+'], ['紅葉賞', '京都', '芝', 3000, '3'], ['ロイヤルクイーンカップ', '京都', '芝', 2200, '3+', '牝'],
+    ['古都マイルチャンピオン', '京都', '芝', 1600, '3+'], ['桃花賞', '阪神', '芝', 1600, '3', '牝'], ['宝山記念', '阪神', '芝', 2200, '3+'],
+    ['阪神ジュニアクイーンズ', '阪神', '芝', 1600, '2', '牝'], ['朝陽杯ジュニアS', '阪神', '芝', 1600, '2'], ['高砂宮記念', '中京', '芝', 1200, '4+'],
+    ['ダートチャンピオンズカップ', '中京', 'ダート', 1800, '3+'],
+  ];
+  // 競馬場ゆかりの地名(G2・G3 や特別戦の名前に使う)
+  const VENUE_WORDS = {
+    東京: ['府中', '多摩', '武蔵', '調布', '青梅'], 中山: ['房総', '下総', '成田', '印旛', '九十九里'], 京都: ['洛北', '嵐山', '鴨川', '比叡', '宇治'],
+    阪神: ['六甲', '摩耶', '武庫', '芦屋', '甲山'], 中京: ['尾張', '名城', '熱田', '知多', '木曽'], 新潟: ['越後', '弥彦', '信濃', '妙高', '寺泊'],
+  };
+  const FLOWERS = ['こぶし', 'ひなげし', 'かたくり', 'ふじばかま', 'おみなえし', 'やまぶき', 'かきつばた', 'ねむのき', 'あせび', 'みずき', 'さくらそう', 'はまなす'];
+  const GRADED = (() => {
+    const list = GRADED_G1.map(([name, venue, surface, dist, age, sex]) => ({ name, grade: 'g1', venue, surface, dist, age, sex: sex || null }));
+    for (const c of COURSES) {
+      const W = VENUE_WORDS[c.venue], t = c.turf, d = c.dirt, mid = t[Math.floor(t.length / 2)];
+      const add = (name, grade, surface, dist, age, sex = null) => list.push({ name, grade, venue: c.venue, surface, dist, age, sex });
+      add(`${W[0]}記念`, 'g2', '芝', t[t.length - 1], '3+');
+      add(`${W[1]}大賞典`, 'g2', '芝', mid, '3+');
+      add(`${W[2]}カップ`, 'g2', '芝', t[1], '3');
+      add(`${W[3]}ステークス`, 'g3', '芝', t[0], '3+');
+      add(`${W[1]}日報杯`, 'g3', '芝', t[2], '3+');
+      add(`${W[4]}牝馬ステークス`, 'g3', '芝', t[1], '3+', '牝');
+      add(`${W[2]}ジュニアステークス`, 'g3', '芝', t[1], '2');
+      add(`${W[4]}ステークス`, 'g3', 'ダート', d[d.length - 1], '3+');
+      add(`${W[0]}ダートカップ`, 'g3', 'ダート', d[0], '3');
+    }
+    return list;
+  })();
+  const ageOk = (cond, age) => (cond === '2' ? age === 2 : cond === '3' ? age === 3 : cond === '4+' ? age >= 4 : age >= 3);
+  function gradedFor(rng, grade, { surface, dist, age, sex, venue }) {
+    let c = GRADED.filter(e => e.grade === grade && ageOk(e.age, age) && (!e.sex || e.sex === sex));
+    if (venue) c = c.filter(e => e.venue === venue && !e.sex && e.age === '3+');
+    const sameSurf = c.filter(e => e.surface === surface);
+    if (sameSurf.length) c = sameSurf;
+    if (!c.length) return null;
+    // 距離が近いものほど選ばれやすい
+    return weighted(rng, c.map(e => [e, 1 / (1 + Math.abs(e.dist - dist) / 200)]));
+  }
+  // 平場・特別戦の名前
+  function plainName(rng, cls, venue, debut) {
+    if (debut) return '新馬';
+    const W = VENUE_WORDS[venue];
+    switch (cls.key) {
+      case 'maiden': return '未勝利';
+      case 'c1': case 'c2': {
+        const r = rng();
+        return r < 0.35 ? `${pick(rng, W)}特別` : r < 0.55 ? `${pick(rng, FLOWERS)}賞` : cls.name;
+      }
+      case 'c3': return rng() < 0.7 ? `${pick(rng, rng() < 0.5 ? W : RACE_WORDS)}ステークス` : cls.name;
+      default: return `${pick(rng, RACE_WORDS)}ステークス`;
+    }
+  }
+
+  // ---------- 戦績(馬柱) ----------
+  // 1 走ずつ古い順に「その時のクラス・条件で、相手関係の中でどれだけ走れたか」を作る。
+  // 人気は能力の見立て(+前走の着順)、着順は当日の出来も加えた走りで決まるので、人気と着順が自然に結びつく
+  const CAREER = { oppSd: 5.5, daySd: 6.5, percSd: 3, link: 0.15, linkWin: 0.5, growth: 3.5, growthMax: 9 };
   function makeCareer(rng, h, cls, date, used) {
     const target = targetWins(rng, cls);
     const m = cls.key === 'maiden' ? 1 + Math.floor(rng() * 7)
@@ -303,43 +365,58 @@
     const runs = [];
     let t = date;
     for (let i = 0; i < m; i++) {
-      const weeks = gaps[i];
-      if (i === 0) h.layoff = weeks;
-      t -= weeks * 7 * DAY_MS;
-      const course = pick(rng, COURSES);
-      const surface = rng() < 0.82 ? h.surface : (h.surface === '芝' ? 'ダート' : '芝');
-      const dist = nearest(course[surface === '芝' ? 'turf' : 'dirt'], h.distBest + gauss(rng) * 300);
+      if (i === 0) h.layoff = gaps[i];
+      t -= gaps[i] * 7 * DAY_MS;
+      runs.push({ date: t, dateLabel: fmtDate(t) });
+    }
+    // 古い順にクラスを進めながら 1 走ずつ
+    let ci = 0, wins = 0, prevPos = null;
+    for (let i = m - 1; i >= 0; i--) {
+      const r = runs[i];
+      const ageThen = h.age - (year - new Date(r.date).getUTCFullYear());
+      const debut = i === m - 1 && ageThen === 2;
+      r.cls = ci < 4 ? CLASSES[PROGRESSION[ci]] : openClassFor(rng, cls);
+      let course = pick(rng, COURSES);
+      let surface = rng() < 0.82 ? h.surface : (h.surface === '芝' ? 'ダート' : '芝');
+      let dist = nearest(course[surface === '芝' ? 'turf' : 'dirt'], h.distBest + gauss(rng) * 300);
+      r.raceName = null;
+      if (r.cls.grade) {
+        const e = gradedFor(rng, r.cls.key, { surface, dist, age: ageThen, sex: h.sex });
+        if (e) { course = COURSES.find(c => c.venue === e.venue); surface = e.surface; dist = e.dist; r.raceName = e.name; }
+      }
+      if (!r.raceName) r.raceName = plainName(rng, r.cls, course.venue, debut);
       const going = weighted(rng, [['良', 70], ['稍重', 15], ['重', 10], ['不良', 5]]);
-      const field = weighted(rng, [[8, 1], [10, 2], [11, 2], [12, 3], [13, 3], [14, 4], [15, 3], [16, 5], [17, 2], [18, 3]]);
-      const r = { date: t, dateLabel: fmtDate(t), venue: course.venue, surface, dist, going, field, no: 1 + Math.floor(rng() * field) };
-      let cp = h.sp;
+      const field = r.cls.grade ? 12 + Math.floor(rng() * 7)
+        : weighted(rng, [[8, 1], [10, 2], [11, 2], [12, 3], [13, 3], [14, 4], [15, 3], [16, 5], [17, 2], [18, 3]]);
+      Object.assign(r, { venue: course.venue, surface, dist, going, field, no: 1 + Math.floor(rng() * field) });
+
+      // その時点の実力(若い頃ほど未完成)とクラス水準との差
+      let cp = h.sp - Math.min(CAREER.growthMax, CAREER.growth * (date - r.date) / (365 * DAY_MS));
       if (surface !== h.surface) cp -= h.offSurface;
       cp -= Math.max(0, Math.abs(dist - h.distBest) - h.distRange) / 100 * 1.5;
       cp += h.wetApt * GOING.indexOf(going) * 0.8;
       if (i < 2) cp += h.form * 2.2;
-      const base = cp - cls.level;
-      const toPos = (v, sd) => clamp(Math.round(1 + (1 - 1 / (1 + Math.exp(-1.7 * v / sd))) * (field - 1)), 1, field);
-      r.pos = toPos(base + gauss(rng) * 11, 14);
-      r.pop = toPos(base + gauss(rng) * 6, 12);
-      runs.push(r);
-    }
-    // 勝利数をクラスと整合させる
-    const wins = runs.filter(r => r.pos === 1);
-    shuffle(rng, wins).slice(0, Math.max(0, wins.length - target)).forEach(r => { r.pos = 2; });
-    let need = target - Math.min(wins.length, target);
-    for (const r of runs.filter(x => x.pos !== 1).sort((a, b) => a.pos - b.pos)) {
-      if (need <= 0) break;
-      r.pos = 1; need--;
-    }
-    // 古い順にクラスを進める
-    let ci = 0;
-    for (let i = m - 1; i >= 0; i--) {
-      const r = runs[i];
-      r.cls = ci < 4 ? CLASSES[PROGRESSION[ci]] : openClassFor(rng, cls);
-      const ageThen = h.age - (year - new Date(r.date).getUTCFullYear());
-      r.raceName = i === m - 1 && ageThen === 2 ? '新馬'
-        : (r.cls.grade || r.cls.key === 'op') ? `${pick(rng, RACE_WORDS)}S` : r.cls.name;
-      if (r.pos === 1) ci = Math.min(ci + 1, 4);
+      const rel = cp - r.cls.level;
+      // 着順は相手関係と当日の出来で自然に決める。クラスと勝利数が合わなくなる時だけ勝ち負けを固定する
+      // 勝つレースは「相手関係から見た勝率」と「残りの勝ち数 ÷ 残りの走数」を掛け合わせて選ぶ(強い立場のレースで勝ちやすい)
+      const left = i + 1, need = target - wins;
+      const pModel = 1 / (1 + (field - 1) * Math.exp(-rel / 3.2));
+      const base = need / left;
+      const pWin = need <= 0 ? 0 : need >= left ? 1 : (pModel * base) / (pModel * base + (1 - pModel) * (1 - base));
+      const mustWin = need <= 0 ? false : rng() < pWin;
+      const opp = Array.from({ length: field - 1 }, () => gauss(rng) * CAREER.oppSd);
+      const oppRun = opp.map(o => o + gauss(rng) * CAREER.daySd);
+      const top = Math.max(...oppRun);
+      let mine = rel + gauss(rng) * CAREER.daySd;
+      for (let k = 0; k < 40 && (mine > top) !== mustWin; k++) mine = rel + gauss(rng) * CAREER.daySd;
+      if ((mine > top) !== mustWin) mine = mustWin ? top + 0.1 : top - 0.1;
+      r.pos = 1 + oppRun.filter(x => x > mine).length;
+      // 人気:能力の見立て + 前走の印象
+      // 調教・パドックの気配で当日の出来も一部は読まれる(link)
+      const look = rel + (mine - rel) * (mustWin ? CAREER.linkWin : CAREER.link) + gauss(rng) * CAREER.percSd + (prevPos == null ? 0 : prevPos <= 3 ? 2.5 : prevPos >= 10 ? -1.5 : 0);
+      r.pop = 1 + opp.map((o, k) => o + (oppRun[k] - o) * CAREER.link + gauss(rng) * CAREER.percSd).filter(x => x > look).length;
+      if (r.pos === 1) { wins++; ci = Math.min(ci + 1, 4); }
+      prevPos = r.pos;
     }
     const jockeyNames = JOCKEYS.map(j => j[0]);
     let w = h.bodyWeight - h.bodyDiff;
@@ -397,8 +474,14 @@
     const course = COURSES[venueIdx % COURSES.length];
     const cls = classForRace(rng, raceNo);
     const turfP = cls.grade ? 0.85 : cls.key === 'maiden' || cls.key === 'c1' ? 0.5 : 0.65;
-    const surface = rng() < turfP ? '芝' : 'ダート';
-    const distance = pick(rng, surface === '芝' ? course.turf : course.dirt);
+    let surface = rng() < turfP ? '芝' : 'ダート';
+    let distance = pick(rng, surface === '芝' ? course.turf : course.dirt);
+    // 重賞はカタログから(この競馬場で行う 3 歳以上・牡牝混合のもの)。条件もカタログに合わせる
+    let gradedEntry = null;
+    if (cls.grade) {
+      gradedEntry = gradedFor(rng, cls.key, { surface, dist: distance, age: 4, sex: null, venue: course.venue });
+      if (gradedEntry) { surface = gradedEntry.surface; distance = gradedEntry.dist; }
+    }
     const weather = weighted(rng, [['晴', 55], ['曇', 30], ['小雨', 10], ['雨', 5]]);
     const goingTable = {
       晴: [['良', 85], ['稍重', 12], ['重', 3]],
@@ -447,13 +530,18 @@
       h.silks = { body: c1, accent: c2, sleeve: vis() < 0.5 ? c1 : c2, pattern: pick(vis, SILK_PATTERNS) };
     });
 
+    // 展開:逃げ・先行が多いほど前半が速くなる(+ 騎手の駆け引きによるブレ)
     const nige = horses.filter(h => h.style === '逃げ').length;
     const senko = horses.filter(h => h.style === '先行').length;
-    const paceAdj = clamp((nige - 1) * 0.006 + (senko - 4) * 0.0015, -0.006, 0.02);
+    const paceAdj = clamp((nige - 1) * PACE.nige + (senko - 3.5) * PACE.senko + gauss(rngFor(seed, 'pace')) * PACE.noise, PACE.min, PACE.max);
 
     const timeLabel = fmtClock(POST_MINUTES[raceNo - 1] + slot * 10);
-    const name = raceNo === 11 && (cls.grade || cls.key === 'op')
-      ? `${pick(rng, RACE_WORDS)}ステークス` : `${cls.key === 'maiden' ? '3歳' : '3歳以上'}${cls.name}`;
+    const cond = cls.key === 'maiden' ? '3歳' : '3歳以上';
+    const name = gradedEntry ? gradedEntry.name
+      : cls.grade ? `${VENUE_WORDS[course.venue][0]}${{ g1: 'グランプリ', g2: '記念', g3: 'ステークス' }[cls.key]}`
+      : cls.key === 'op' ? `${pick(rng, RACE_WORDS)}ステークス`
+      : (cls.key === 'c1' || cls.key === 'c2' || cls.key === 'c3') && raceNo >= 9 && rng() < 0.7 ? plainName(rng, cls, course.venue, false).replace(/^(\d)勝クラス$/, `${cond}$1勝クラス`)
+      : `${cond}${cls.name}`;
 
     const race = {
       seed, day, raceNo, venueIdx, course, date, dateLabel: fmtDate(date, true), venue: course.venue, dir: course.dir, cls, name, handicap,
@@ -487,6 +575,9 @@
 
   // ---------- レースシミュレーション ----------
   const DT = 0.5;
+  // 展開の効き方(較正値)。前半が速いほど前の馬がバテて差しが届き、遅いと前残り
+  // 較正(300R):勝ち馬の脚質 逃げ10%・先行48%・差し32%・追込10%。遅い展開は前が7割、速い展開は差し・追込が6割強
+  const PACE = { nige: 0.007, senko: 0.002, noise: 0.006, min: -0.02, max: 0.03, follow: 0.6, drainExp: 12, kickE: 0.55, tire: 0.9, tireMax: 0.14, slowKick: 80 };
   const DAY_NOISE = 16; // 当日の出来のブレ(ポイント)
   const ABILITY_K = 0.00034; // 1 ポイントあたりの速度比
 
@@ -503,9 +594,14 @@
       let lateStart = false;
       if (rng() < 0.03 + (50 - h.gt) / 100 * 0.04) { delay += 0.6 + rng() * 1.0; lateStart = true; }
       const trouble = rng() < 0.07 ? { at: D * (0.4 + rng() * 0.5), len: 2 + rng() * 2 } : null;
-      const early = EARLY[h.style] + (h.style === '逃げ' || h.style === '先行' ? race.paceAdj : 0);
+      // 速いペースでは前の馬だけが飛ばし(後ろは一部ついていく)、遅いペースでは全体が落として馬群が詰まる
+      const fr = h.style === '逃げ' || h.style === '先行';
+      const early = EARLY[h.style] + race.paceAdj * (fr || race.paceAdj < 0 ? 1 : PACE.follow);
       const cap = clamp(1.03 + (h.st - race.cls.level) / 100 * (D / 1600) * 0.3, 0.8, 1.3);
-      const kick = clamp(0.035 + (h.bu - race.cls.level) / 100 * 0.05, 0.008, 0.075) * KICK_STYLE[h.style] * straightF;
+      // スローペースでは前の馬も余力があり、直線でもう一伸びする
+      const front = h.style === '逃げ' || h.style === '先行';
+      const kick = clamp(0.035 + (h.bu - race.cls.level) / 100 * 0.05, 0.008, 0.075) * KICK_STYLE[h.style] * straightF
+        * (front ? 1 + Math.max(0, -race.paceAdj) * PACE.slowKick : 1);
       return { h, mult, delay, lateStart, trouble, troubleT: null, early, E: cap, kick, pos: 0, ar: 0, fin: null };
     });
     const frames = record ? [st.map(() => 0)] : null;
@@ -517,11 +613,11 @@
           const accel = Math.min(1, (t - s.delay + DT) / 3);
           const x = s.pos / D;
           let pm;
-          if (s.pos >= kickStart) pm = 1 + s.kick * clamp(s.E / 0.25, 0, 1);
+          if (s.pos >= kickStart) pm = 1 + s.kick * clamp(s.E / PACE.kickE, 0, 1);
           else if (x < 0.55) pm = s.early;
           else if (x < 0.7) pm = s.early + (1 - s.early) * (x - 0.55) / 0.15;
           else pm = 1;
-          const fatigue = s.E < 0 ? 1 - Math.min(0.05, -s.E * 0.15) : 1;
+          const fatigue = s.E < 0 ? 1 - Math.min(PACE.tireMax, -s.E * PACE.tire) : 1;
           s.ar = 0.85 * s.ar + 0.0035 * gauss(rng);
           let trouble = 1;
           if (s.trouble && s.pos >= s.trouble.at) {
@@ -529,7 +625,7 @@
             if (t - s.troubleT < s.trouble.len) trouble = 0.965;
           }
           v = race.vbase * s.mult * pm * fatigue * (1 + s.ar) * accel * trouble;
-          if (s.fin === null) s.E -= Math.pow(pm, 4) / T0 * DT;
+          if (s.fin === null) s.E -= Math.pow(pm, PACE.drainExp) / T0 * DT;
         }
         const np = s.pos + v * DT;
         if (s.fin === null && np >= D) {
@@ -607,7 +703,8 @@
     const leadAt600 = Math.min(...sim.st.map((s, i) => timeAtDistance(frames, dt, i, 600)));
     const leadAtLast = Math.min(...sim.st.map((s, i) => timeAtDistance(frames, dt, i, D - 600)));
     const first3f = leadAt600, final3f = order[0].fin - leadAtLast;
-    const pace = first3f < final3f - 0.8 ? 'H' : first3f > final3f + 0.8 ? 'S' : 'M';
+    // 展開(逃げ・先行の数と駆け引きで決まる前半の速さ)。概ね 3 分の 1 ずつ
+    const pace = race.paceAdj > 0.011 ? 'H' : race.paceAdj < 0.001 ? 'S' : 'M';
     return {
       order: rows.map(r => r.no), rows, frames, dt, first3f, final3f, pace,
       payouts: race.market ? settlePayouts(race, rows.map(r => r.no)) : null,
@@ -891,8 +988,8 @@
 
   return {
     mulberry32, hashStr, gauss, COURSES, CLASSES, BET_TYPES, BET, STYLES, GOING,
-    bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
+    PACE, EARLY, KICK_STYLE, CAREER, bracketCounts, bracketOf, baseSpeed, generateRace, runRace, simulateRace, estimateProbs,
     odds, placePay, placeRange, payFromOdds, settlePayouts, expandCombos, createTicket, ticketReturn,
-    bracketSold, formatTime, fmtDate, daySchedule, fmtClock, TIPSTERS, NAME_WITTY, NAME_JP, NAME_PHRASE, FAMOUS_HORSES, horseNameKind, JOCKEYS, record, marginText, comboProb, canonical, comboKey, harvilleTop3,
+    bracketSold, formatTime, fmtDate, daySchedule, fmtClock, TIPSTERS, GRADED, NAME_WITTY, NAME_JP, NAME_PHRASE, FAMOUS_HORSES, horseNameKind, JOCKEYS, record, marginText, comboProb, canonical, comboKey, harvilleTop3,
   };
 });

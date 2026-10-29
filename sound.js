@@ -158,8 +158,58 @@
   }
   function setEnabled(on) {
     enabled = !!on;
+    if (!enabled) hush();
     if (master) master.gain.setTargetAtTime(enabled ? 0.8 : 0, ac.currentTime, 0.05);
   }
 
-  root.KeibaSound = { fanfare, fanfareLength, crowd, cheer, stop, setEnabled, get enabled() { return enabled; } };
+  // ---------- 実況の声(ブラウザの音声合成) ----------
+  const synth = root.speechSynthesis || null;
+  let voice = null, speaking = false, pending = null, voiceOn = true, rateBoost = 0;
+  function pickVoice() {
+    if (!synth) return;
+    const ja = synth.getVoices().filter(v => /^ja/i.test(v.lang));
+    // 男性のアナウンサー風の声を優先(macOS: Otoya / Hattori、Chrome: Google 日本語)
+    const pref = ['Otoya', 'Hattori', 'Ichiro', 'Google 日本語', 'Kyoko', 'O-ren'];
+    voice = pref.map(p => ja.find(v => v.name.includes(p))).find(Boolean) || ja[0] || null;
+  }
+  if (synth) { pickVoice(); try { synth.addEventListener('voiceschanged', pickVoice); } catch (e) { /* 古いブラウザ */ } }
+
+  // 読み上げ用に表記を直す(数字・記号・距離など)
+  function toSpeech(text) {
+    return text
+      .replace(/(\d+):(\d{2})\.(\d)/g, '$1分$2秒$3')
+      .replace(/(\d+)m/g, '$1メートル')
+      .replace(/G1/g, 'ジーワン').replace(/G2/g, 'ジーツー').replace(/G3/g, 'ジースリー')
+      .replace(/(\d)\.1\/2馬身/g, '$1馬身半')
+      .replace(/!/g, '!').replace(/、/g, '、 ');
+  }
+  function speakNow(item) {
+    const u = new SpeechSynthesisUtterance(toSpeech(item.text));
+    u.lang = 'ja-JP';
+    if (voice) u.voice = voice;
+    const excited = /!/.test(item.text);
+    u.rate = Math.min(2, 1.12 + rateBoost + (excited ? 0.12 : 0));
+    u.pitch = excited ? 1.15 : 1.0;
+    u.volume = 1;
+    speaking = true;
+    u.onend = u.onerror = () => { speaking = false; if (pending) { const p = pending; pending = null; speakNow(p); } };
+    synth.speak(u);
+  }
+  // urgent: 直線の攻防やゴールなど、今しゃべっている途中でも切り替える台詞
+  function speak(text, urgent = false) {
+    if (!synth || !voiceOn || !enabled) return;
+    const item = { text };
+    if (speaking && urgent) { pending = null; synth.cancel(); speaking = false; speakNow(item); return; }
+    if (speaking) { pending = item; return; } // 溜めずに最新の 1 本だけ待たせる
+    speakNow(item);
+  }
+  function hush() { pending = null; speaking = false; if (synth) synth.cancel(); }
+  function setVoice(on) { voiceOn = !!on; if (!voiceOn) hush(); }
+  // 再生速度が上がるほど早口に
+  function setPace(speed) { rateBoost = speed >= 4 ? 0.45 : speed >= 2 ? 0.2 : 0; }
+
+  root.KeibaSound = {
+    fanfare, fanfareLength, crowd, cheer, stop, setEnabled, speak, hush, setVoice, setPace,
+    get enabled() { return enabled; }, get canSpeak() { return !!synth; },
+  };
 })(typeof self !== 'undefined' ? self : this);
