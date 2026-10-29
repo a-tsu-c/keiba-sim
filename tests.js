@@ -136,16 +136,31 @@
     eq(E.generateRace({ seed: 1, day: 3 }).dateLabel, '2026年11月7日(土)');
   });
 
-  test('馬名・騎手名(もじり名・9文字以内・重複なし)', () => {
-    ok(E.NAME_WITTY.every(nm => nm.length <= 9), '9文字超: ' + E.NAME_WITTY.filter(nm => nm.length > 9).join(','));
-    eq(new Set(E.NAME_WITTY).size, E.NAME_WITTY.length, 'もじり名の重複');
+  test('馬名・騎手名(作り方の多様さ・著名馬と不一致・9文字以内・重複なし)', () => {
+    const fixed = [...E.NAME_WITTY, ...E.NAME_JP, ...E.NAME_PHRASE];
+    ok(fixed.every(nm => nm.length <= 9), '9文字超: ' + fixed.filter(nm => nm.length > 9).join(','));
+    eq(new Set(fixed).size, fixed.length, '固定名リストの重複');
+    const famous = new Set(E.FAMOUS_HORSES);
+    ok(!fixed.some(nm => famous.has(nm)), '固定名に著名馬: ' + fixed.filter(nm => famous.has(nm)).join(','));
     eq(new Set(E.JOCKEYS.map(j => j[0])).size, E.JOCKEYS.length, '騎手名の重複');
-    let witty = 0, total = 0;
+    // 大量に生成して、作り方の比率と著名馬との不一致を確認
+    const rng = E.mulberry32(7), used = new Set(), kinds = {};
+    for (let i = 0; i < 1500; i++) {
+      if (used.size > 600) used.clear();
+      const { name, kind } = E.horseNameKind(rng, used);
+      ok(name.length <= 9 && !famous.has(name), '馬名: ' + name);
+      kinds[kind] = (kinds[kind] || 0) + 1;
+    }
+    eq(Object.keys(kinds).length, 6, '作り方が6種類とも出る');
+    const hist = ((kinds.witty || 0) + (kinds.history || 0)) / 1500;
+    ok(hist > 0.1 && hist < 0.3, `人物・故事系の割合 ${hist.toFixed(2)}`);
+    // 実際のレースでも人物・故事系に偏っていない
+    let total = 0, histN = 0;
     for (let s = 1; s <= 40; s++) {
       const r = E.generateRace({ seed: s, raceNo: 1 + (s % 12), venueIdx: s % 6, light: true });
-      r.horses.forEach(h => { total++; if (E.NAME_WITTY.includes(h.name)) witty++; });
+      r.horses.forEach(h => { total++; if (E.NAME_WITTY.includes(h.name)) histN++; });
     }
-    ok(witty / total > 0.15 && witty / total < 0.5, `もじり名の割合 ${(witty / total).toFixed(2)}`);
+    ok(histN / total < 0.25, `レース内のもじり名の割合 ${(histN / total).toFixed(2)}`);
   });
 
   // --- 馬券の展開 ---

@@ -49,7 +49,7 @@
   const headerCache = new Map();
   let scheduleCache = null;
   // 出走馬の生成方式を変えたら上げる(同じシードでも別の馬になるため、古い開催は作り直す)
-  const MEET_GEN = 2;
+  const MEET_GEN = 3;
   function newMeet(day) {
     save.meet = { gen: MEET_GEN, day, seedBase: newSeed(), races: {} };
     save.sel = null;
